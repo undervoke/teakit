@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v0.[0-9]+.[0-9]+']
+
+permissions:
+  contents: read
+
+env:
+  BUNDLE: teakit-${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+
+jobs:
+  bundle:
+    name: Build and test source bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      - name: Check the Go tag and its release notes
+        if: github.ref_type == 'tag'
+        run: go run ./internal/cmd/check-release "$GITHUB_REF_NAME" "$GITHUB_SHA"
+      - name: Archive the Git tree
+        run: |
+          mkdir dist
+          git archive --format=tar.gz --prefix="$BUNDLE/" --output="dist/$BUNDLE.tar.gz" "$GITHUB_SHA"
+          (cd dist && sha256sum "$BUNDLE.tar.gz" > SHA256SUMS)
+      # While distributing source archives, test the exported tree: an export
+      # rule can omit a source file that still builds in the checkout.
+      - name: Test the bundled module
+        env:
+          GOTOOLCHAIN: local
+        run: |
+          tar -xzf "dist/$BUNDLE.tar.gz" -C "$RUNNER_TEMP"
+          cd "$RUNNER_TEMP/$BUNDLE"
+          go test -mod=readonly ./...
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ env.BUNDLE }}
+          path: dist/
+
+  release:
+    name: Publish GitHub Release
+    needs: bundle
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ env.BUNDLE }}
+      - name: Publish the tested archive with release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tar -xOzf "$BUNDLE.tar.gz" "$BUNDLE/docs/releases/$GITHUB_REF_NAME.md" > "$RUNNER_TEMP/notes.md"
+          gh release create "$GITHUB_REF_NAME" "$BUNDLE.tar.gz" SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --title "$GITHUB_REF_NAME" \
+            --notes-file "$RUNNER_TEMP/notes.md" --generate-notes
