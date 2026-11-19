@@ -7,9 +7,11 @@ Add teakit to the Go module that builds your terminal UI. Its module path is `gi
 | Application | Integration |
 |---|---|
 | Between wizard steps | Call `teakit.AskLeave(ctx, cfg)` when the preceding program has returned. It runs its own inline program and clears its frame on answer. Handle the returned error, then resume on `teakit.Stay`, leave on `teakit.Leave`, or end the wizard on `teakit.Interrupt`. |
-| Inside a running step or full-screen UI | Create a fresh question with `teakit.NewLeave(cfg)` when opening the prompt. Route input to it until answered and include `question.View()` in your layout. The parent program keeps ownership of the terminal. |
+| Inside a running step or full-screen UI | Create a fresh question with `teakit.NewLeave(cfg)` and route input to it until answered. The parent program owns the terminal. Use `question.View()` for the default list and hint, or draw the question in the parent layout. |
 
 Each tool decides **when** to open the question: every time the user asks to leave, or only if the draft has changed. The title, explanatory text, and labels belong to the tool. Start by replacing one existing prompt; the rest of the screen flow can keep using its current components. See the [runnable example](../examples/leave/main.go).
+
+For a native list, pass `question.Cursor()` to the same renderer as the surrounding screens: index 0 is the stay row and index 1 is the leave row. In a compact footer, use that index to show which action Enter takes in the existing hint line. With either layout, the tool can keep its wording in the renderer and supply only extra answer keys in `LeaveConfig`.
 
 For example, inside a parent model's `Update`, store the value returned by the question so cursor moves carry through to the next key:
 
@@ -32,10 +34,10 @@ if m.asking {
 ## Install or update a version
 
 1. Choose an exact tag from [Releases](https://github.com/undervoke/teakit/releases). Read the notes between your current version and the target; a v0 minor release can change the API or key behavior. `go list -m -versions github.com/undervoke/teakit` lists published Go versions.
-2. Add the import or make the migration described in the notes, then run the following from the directory containing the consuming `go.mod`. Here `v0.1.0` is an example target:
+2. Add the import or make the migration described in the notes, then run the following from the directory containing the consuming `go.mod`. Here `v0.2.0` is an example target:
 
    ```sh
-   go get github.com/undervoke/teakit@v0.1.0
+   go get github.com/undervoke/teakit@v0.2.0
    go mod tidy
    go list -m github.com/undervoke/teakit
    go test ./...

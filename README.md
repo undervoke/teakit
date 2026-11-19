@@ -13,8 +13,8 @@ The leave question is the first component. The following design also covers futu
 | teakit fixes | Each tool supplies |
 |---|---|
 | The key meanings below | Keys it adds to cancel, such as `q`, and keys of its own |
-| How the leave question answers | When to ask (always, or only with unsaved changes) and the question's title, options, and body |
-| Numbered lists, cancellable waits, text wrapping, and styles | What its screens show |
+| The leave question's answers, highlighted option, and default view | When to ask (always, or only with unsaved changes), the question's wording, and its layout, styles, and key hints in the tool |
+| Numbered lists, cancellable waits, and text wrapping | What its screens show |
 | An optional runner that runs each screen as its own program and erases the screen when the user leaves it | The flow between screens, whether to use the runner or a full-screen model, and validation of its own values |
 
 A behavior becomes a tool-supplied setting only when two tools actually need it to differ; until then it stays fixed here.

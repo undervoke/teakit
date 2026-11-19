@@ -21,7 +21,7 @@ const (
 	Interrupt
 )
 
-// LeaveConfig supplies the wording and extra keys for one question.
+// LeaveConfig supplies wording for the default view and extra answer keys.
 // StayKeys and LeaveKeys hold exact tea.Key names (for example "y" or "q");
 // anything else is left alone for the host. Built-ins always win.
 type LeaveConfig struct {
@@ -121,6 +121,10 @@ func (m LeaveModel) View() string {
 	b.WriteString("\n↑/↓ k/j move · 1/2 or enter choose · esc leave · ctrl+c exit")
 	return b.String()
 }
+
+// Cursor returns the highlighted option's zero-based index: 0 for stay, 1 for
+// leave. A host that draws its own question can use it to show what Enter does.
+func (m LeaveModel) Cursor() int { return m.cursor }
 
 // Decision reports the answer, or Pending while unanswered.
 func (m LeaveModel) Decision() Decision { return m.decision }
