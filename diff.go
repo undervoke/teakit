@@ -1,0 +1,890 @@
+// Package teakit provides shared Bubble Tea components with one set of key
+// conventions for terminal tools. This file adds the side-by-side override
+// diff view: a consent screen that shows what applying an update would
+// change, and answers only Enter on a complete, visible, armed diff.
+package teakit
+
+import (
+	"context"
+	"slices"
+	"strings"
+	"time"
+
+	tea "charm.land/bubbletea/v2"
+)
+
+// DiffOpKind identifies one line of a section diff.
+type DiffOpKind int
+
+const (
+	// OpEqual marks a line present on both sides.
+	OpEqual DiffOpKind = iota
+	// OpDelete marks a line present only on the before side.
+	OpDelete
+	// OpInsert marks a line present only on the after side.
+	OpInsert
+)
+
+// DiffOp is one line of a section diff, without any trailing newline.
+type DiffOp struct {
+	Kind DiffOpKind
+	Text string
+}
+
+// DiffSection is one override region: a label, host disclosures, and the
+// per-line edit list. An absent side renders an "(absent)" placeholder;
+// a present side with no lines renders "(empty)".
+type DiffSection struct {
+	Label        string
+	Notes        []string
+	BeforeAbsent bool
+	AfterAbsent  bool
+	Ops          []DiffOp
+}
+
+// DiffFile groups the sections of one logical file.
+type DiffFile struct {
+	Path     string
+	Sections []DiffSection
+}
+
+// DiffState tracks whether the diff is ready to confirm.
+type DiffState int
+
+const (
+	// DiffLoading waits for the host's content.
+	DiffLoading DiffState = iota
+	// DiffReady shows a complete diff that Enter can confirm.
+	DiffReady
+	// DiffIncomplete shows why the diff cannot be applied.
+	DiffIncomplete
+)
+
+// DiffDecision is the answer to the diff question. Pending means unanswered.
+type DiffDecision int
+
+const (
+	DiffPending DiffDecision = iota
+	DiffConfirm
+	DiffBack
+	DiffCancel
+	DiffInterrupt
+)
+
+// DiffConfig supplies the diff view's wording and behavior. Teakit fixes the
+// layout, styles, and key meanings; the host supplies the text and decides
+// when cancelling asks first, when Back exists, and whether an extra
+// acknowledgement gates Enter.
+type DiffConfig struct {
+	// Title is pinned above the diff; empty when the host draws its own.
+	Title string
+	// Body scrolls above the first file, e.g. a data-loss notice.
+	Body string
+	// ApplyLabel is Enter's hint verb; it defaults to "apply".
+	ApplyLabel string
+	// CancelKeys holds exact tea.Key names that cancel like Esc (e.g. "q");
+	// built-in bindings win over these names.
+	CancelKeys []string
+	// Back makes Backspace answer DiffBack; otherwise it is ignored.
+	Back bool
+	// Leave, when set, opens this leave question on cancel instead of
+	// cancelling at once.
+	Leave *LeaveConfig
+	// Acknowledge, when set, pins "[ ] <text>" above the footer and makes
+	// Enter inert until y arms it.
+	Acknowledge string
+}
+
+// diffSettleDelay is the quiet period after the first Ready frame before y
+// and Enter act. Without it, an Enter typed ahead during the spinner, or a
+// double-press on the wizard's Apply button, could confirm a diff nobody
+// saw.
+var diffSettleDelay = 300 * time.Millisecond
+
+// DiffModel is an embeddable diff question. It never quits the program;
+// the owner reads Decision and decides what follows.
+type DiffModel struct {
+	cfg         DiffConfig
+	state       DiffState
+	decision    DiffDecision
+	files       []DiffFile
+	reason      string
+	width       int
+	height      int
+	offset      int
+	readyAt     time.Time
+	acked       bool
+	notice      string
+	leave       LeaveModel
+	leaveActive bool
+}
+
+// NewDiff returns a diff waiting for content.
+func NewDiff(cfg DiffConfig) DiffModel {
+	if cfg.ApplyLabel == "" {
+		cfg.ApplyLabel = "apply"
+	}
+	cfg.CancelKeys = slices.Clone(cfg.CancelKeys)
+	if cfg.Leave != nil {
+		leave := *cfg.Leave
+		cfg.Leave = &leave
+	}
+	return DiffModel{cfg: cfg, width: 80}
+}
+
+// WithFiles supplies the diff content and moves the model to Ready, or to
+// Incomplete when a section contradicts its own presence flags. Supplying
+// new content resets the acknowledgement and the scroll position.
+func (m DiffModel) WithFiles(files []DiffFile) DiffModel {
+	m.files = files
+	m.offset = 0
+	m.acked = false
+	m.notice = ""
+	m.leaveActive = false
+	m.readyAt = time.Now()
+	m.state = DiffReady
+	m.reason = ""
+	if reason := diffContradiction(files); reason != "" {
+		m.state = DiffIncomplete
+		m.reason = reason
+	}
+	return m
+}
+
+// WithIncomplete shows a host-supplied failure instead of a diff. Only back,
+// cancel, and interrupt act. Supplying it resets the acknowledgement.
+func (m DiffModel) WithIncomplete(reason string) DiffModel {
+	m.reason = reason
+	m.state = DiffIncomplete
+	m.offset = 0
+	m.acked = false
+	m.notice = ""
+	m.leaveActive = false
+	return m
+}
+
+// SetSize fixes the viewport. The scroll anchor is kept on the logical row
+// at the top, because wrapping changes raw offsets on resize.
+func (m DiffModel) SetSize(width, height int) DiffModel {
+	if width > 0 {
+		var sec, sub int
+		var path, label string
+		if rows := m.contentRows(m.effWidth()); m.offset < len(rows) && m.offset >= 0 {
+			anchor := rows[m.offset]
+			sec, path, label = anchor.sec, anchor.path, anchor.label
+			sub = diffRowSub(rows, m.offset)
+		}
+		m.width = width
+		m.height = height
+		m.offset = 0
+		if rows := m.contentRows(m.effWidth()); len(rows) > 0 {
+			best := 0
+			for i, r := range rows {
+				if r.sec > sec || (r.sec == sec && (r.path != path || r.label != label)) {
+					break
+				}
+				if r.sec == sec && diffRowSub(rows, i) >= sub {
+					best = i
+					break
+				}
+				best = i
+			}
+			m.offset = best
+		}
+		m = m.clampOffset()
+		return m
+	}
+	m.height = height
+	m = m.clampOffset()
+	return m
+}
+
+// diffRowSub counts the row's index within its section, so the resize anchor
+// survives rewrapping.
+func diffRowSub(rows []diffRow, idx int) int {
+	sub := 0
+	for i := idx; i >= 0; i-- {
+		if rows[i].secStart && i != idx {
+			break
+		}
+		if rows[i].sec != rows[idx].sec {
+			break
+		}
+		sub++
+	}
+	return sub
+}
+
+// Init performs no I/O. Arming is timestamp-based (see readyAt), so there
+// is no background tick to leak in tests or embedded hosts.
+func (m DiffModel) Init() tea.Cmd { return nil }
+
+// Update routes keys to the diff or to its embedded leave question. Enter
+// confirms only on a complete, visible, armed diff with the acknowledgement
+// (when configured) armed by y. Paste messages are ignored so pasted text
+// can never consent.
+func (m DiffModel) Update(msg tea.Msg) (DiffModel, tea.Cmd) {
+	if m.decision != DiffPending {
+		return m, nil
+	}
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		return m.SetSize(msg.Width, msg.Height), nil
+	case tea.PasteMsg:
+		return m, nil
+	case tea.KeyPressMsg:
+		return m.updateKey(msg)
+	}
+	return m, nil
+}
+
+// updateKey handles one key press outside the leave question.
+func (m DiffModel) updateKey(key tea.KeyPressMsg) (DiffModel, tea.Cmd) {
+	if m.leaveActive {
+		return m.updateLeave(key), nil
+	}
+	name := key.String()
+	switch name {
+	case "ctrl+c":
+		m.decision = DiffInterrupt
+		return m, nil
+	case "esc":
+		return m.cancel(), nil
+	case "backspace":
+		if m.cfg.Back {
+			m.decision = DiffBack
+		}
+		return m, nil
+	case "enter":
+		if key.Key().IsRepeat {
+			return m, nil
+		}
+		return m.confirm(), nil
+	}
+	var scrolled bool
+	m, scrolled = m.scrollKey(name)
+	if scrolled {
+		m.notice = ""
+		m = m.clampOffset()
+		return m, nil
+	}
+	switch name {
+	case "y", "Y":
+		if key.Key().IsRepeat {
+			return m, nil
+		}
+		m.notice = ""
+		if m.cfg.Acknowledge != "" && m.state == DiffReady && m.armed() {
+			m.acked = true
+		}
+		return m, nil
+	case "n", "N":
+		m.notice = ""
+		if m.cfg.Acknowledge != "" && m.state == DiffReady {
+			m.acked = false
+		}
+		return m, nil
+	}
+	if slices.Contains(m.cfg.CancelKeys, name) {
+		return m.cancel(), nil
+	}
+	return m, nil
+}
+
+// updateLeave forwards keys to the embedded leave question. Stay returns to
+// the diff with scroll and acknowledgement kept; Leave cancels; Ctrl+C
+// interrupts from any state including the question.
+func (m DiffModel) updateLeave(key tea.KeyPressMsg) DiffModel {
+	if key.String() == "ctrl+c" {
+		m.decision = DiffInterrupt
+		m.leaveActive = false
+		return m
+	}
+	next, _ := m.leave.Update(key)
+	m.leave = next
+	switch m.leave.Decision() {
+	case Stay:
+		m.leaveActive = false
+	case Leave:
+		m.decision = DiffCancel
+		m.leaveActive = false
+	case Interrupt:
+		m.decision = DiffInterrupt
+		m.leaveActive = false
+	}
+	return m
+}
+
+// scrollKey moves the viewport and reports whether the key was bound.
+func (m DiffModel) scrollKey(name string) (DiffModel, bool) {
+	rows := m.contentRows(m.effWidth())
+	page := 1
+	if whole := m.atTop(rows); len(whole.visible) > 0 {
+		page = len(whole.visible)
+	}
+	switch name {
+	case "up", "k":
+		m.offset--
+		return m, true
+	case "down", "j":
+		m.offset++
+		return m, true
+	case "pgup":
+		m.offset -= page
+		return m, true
+	case "pgdn":
+		m.offset += page
+		return m, true
+	case "home", "g":
+		m.offset = 0
+		return m, true
+	case "end", "G":
+		m.offset = len(rows)
+		return m, true
+	case "]":
+		for i := m.offset + 1; i < len(rows); i++ {
+			if rows[i].secStart {
+				m.offset = i
+				return m, true
+			}
+		}
+		m.offset = len(rows)
+		return m, true
+	case "[":
+		for i := m.offset - 1; i >= 0; i-- {
+			if rows[i].secStart {
+				m.offset = i
+				return m, true
+			}
+		}
+		m.offset = 0
+		return m, true
+	}
+	return m, false
+}
+
+// cancel asks the configured leave question or cancels at once.
+func (m DiffModel) cancel() DiffModel {
+	if m.cfg.Leave != nil {
+		m.leave = NewLeave(*m.cfg.Leave)
+		m.leaveActive = true
+		return m
+	}
+	m.decision = DiffCancel
+	return m
+}
+
+// confirm answers Enter on a Ready diff. Anything else sets a refusal
+// notice and leaves the decision pending.
+func (m DiffModel) confirm() DiffModel {
+	if m.state != DiffReady {
+		m.notice = "The diff is not ready; nothing can be applied yet."
+		return m
+	}
+	if m.tooSmall() {
+		m.notice = "Terminal too small to review; enlarge it or press esc."
+		return m
+	}
+	if !m.armed() {
+		m.notice = "The diff is not ready; nothing can be applied yet."
+		return m
+	}
+	if m.cfg.Acknowledge != "" && !m.acked {
+		m.notice = "! Press y to accept: " + m.cfg.Acknowledge + ". Enter alone never confirms."
+		return m
+	}
+	m.decision = DiffConfirm
+	return m
+}
+
+// armed reports whether the settle delay has elapsed since the first Ready
+// frame.
+func (m DiffModel) armed() bool {
+	return !m.readyAt.IsZero() && time.Since(m.readyAt) >= diffSettleDelay
+}
+
+// View renders the pinned title, the scrolling rows, the acknowledgement
+// and refusal lines, and the footer. It returns exactly height lines when a
+// height is set.
+func (m DiffModel) View() string {
+	w := m.effWidth()
+	if m.tooSmall() {
+		return m.fitHeight([]string{"Terminal too small to review; enlarge it or press esc."})
+	}
+	var out []string
+	if m.cfg.Title != "" {
+		out = append(out, strings.Split(m.cfg.Title, "\n")...)
+	}
+	switch m.state {
+	case DiffLoading:
+		out = append(out, "Preparing the diff…")
+		if m.notice != "" {
+			out = append(out, diffStyle(diffSGRYellow+";"+diffSGRBold, m.notice))
+		}
+		return m.fitHeight(out)
+	case DiffIncomplete:
+		out = append(out, diffIncompleteLines(m.reason)...)
+		if m.notice != "" {
+			out = append(out, diffStyle(diffSGRYellow+";"+diffSGRBold, m.notice))
+		}
+		return m.fitHeight(out)
+	}
+	rows := m.contentRows(w)
+	total := len(rows)
+	m = m.clampOffset()
+	lay := m.layout(rows, w)
+	out = append(out, lay.pinned...)
+	for _, r := range lay.visible {
+		out = append(out, r.text)
+	}
+	out = append(out, lay.below...)
+	if !m.leaveActive {
+		out = append(out, m.footerLines(w, rows, lay, total)...)
+	}
+	return m.fitHeight(out)
+}
+
+// State reports whether the diff is ready to confirm.
+func (m DiffModel) State() DiffState { return m.state }
+
+// Decision reports the answer, or Pending while unanswered.
+func (m DiffModel) Decision() DiffDecision { return m.decision }
+
+// effWidth returns the set width, defaulting to 80 columns.
+func (m DiffModel) effWidth() int {
+	if m.width > 0 {
+		return m.width
+	}
+	return 80
+}
+
+// tooSmall reports whether the terminal cannot show the pinned header, one
+// content row, and the footer. A diff the user cannot see is never
+// confirmable.
+func (m DiffModel) tooSmall() bool {
+	return m.effWidth() < 30 || (m.height > 0 && m.height < 7)
+}
+
+// contentRows builds the scrollable rows: body lines above the first file,
+// then every file's table.
+func (m DiffModel) contentRows(width int) []diffRow {
+	var rows []diffRow
+	if m.cfg.Body != "" {
+		for _, paragraph := range strings.Split(m.cfg.Body, "\n") {
+			body, _ := diffEscape(paragraph)
+			for _, line := range diffWrapLine(body, width) {
+				rows = append(rows, diffRow{text: line, sec: -1})
+			}
+		}
+	}
+	sec := 0
+	for i, f := range m.files {
+		sec = diffLayoutFile(f, i, sec, width, &rows)
+	}
+	return rows
+}
+
+// diffViewLayout splits the view into pinned lines, visible rows, and the
+// lines below the viewport, sharing one height budget so the footer is
+// never cut by the pinned context lines.
+type diffViewLayout struct {
+	top     int
+	pinned  []string
+	visible []diffRow
+	below   []string
+}
+
+// layout computes the visible slice for the current offset and size.
+func (m DiffModel) layout(rows []diffRow, width int) diffViewLayout {
+	top := m.offset
+	if top > len(rows) {
+		top = len(rows)
+	}
+	if top < 0 {
+		top = 0
+	}
+	pinned := m.pinnedContext(rows, top, width)
+	var below []string
+	if m.cfg.Acknowledge != "" {
+		below = append(below, m.ackLine(width))
+	}
+	if m.notice != "" {
+		for _, line := range diffWrapLine(mustEscape(m.notice), width) {
+			below = append(below, diffStyle(diffSGRYellow+";"+diffSGRBold, line))
+		}
+	}
+	footer := 0
+	if m.leaveActive {
+		below = append(below, m.leaveLines(width)...)
+	} else {
+		footer = 2 // status + hint
+	}
+	avail := len(rows) - top
+	if m.height > 0 {
+		avail = m.height - titleLines(m.cfg.Title) - len(pinned) - len(below) - footer
+		if avail < 0 {
+			avail = 0
+		}
+		if avail > len(rows)-top {
+			avail = len(rows) - top
+		}
+	}
+	return diffViewLayout{top: top, pinned: pinned, visible: rows[top : top+avail], below: below}
+}
+
+// titleLines counts the pinned title lines.
+func titleLines(title string) int {
+	if title == "" {
+		return 0
+	}
+	return len(strings.Split(title, "\n"))
+}
+
+// footerLines renders the status line and the width-dependent hint line.
+
+// pinnedContext returns the path context lines when the file header has
+// scrolled off: `path > @ label` plus the column heading in side-by-side
+// mode, or the same line with ` · before/after` in stacked mode.
+func (m DiffModel) pinnedContext(rows []diffRow, top, width int) []string {
+	if top <= 0 || top >= len(rows) {
+		return nil
+	}
+	cur := rows[top]
+	if cur.sec < 0 {
+		return nil
+	}
+	// The file's header is its rows before the first section label.
+	first := top
+	for first > 0 && rows[first-1].file == cur.file {
+		first--
+	}
+	headerEnd := top + 1 // a file always has a section at or below top
+	for i := first; i < len(rows) && rows[i].file == cur.file; i++ {
+		if rows[i].secStart {
+			headerEnd = i
+			break
+		}
+	}
+	if top < headerEnd {
+		return nil
+	}
+	ctx, _ := diffEscape(cur.path + " > @ " + cur.label)
+	suffix := ""
+	layout := diffFileLayout(width, diffNumWidth(m.files[cur.file]))
+	if !layout.side {
+		suffix = " · before"
+		if cur.block == 1 {
+			suffix = " · after"
+		}
+	}
+	var out []string
+	for _, line := range diffWrapLine(ctx+suffix, width) {
+		out = append(out, diffStyle(diffSGRFaint, line))
+	}
+	if layout.side {
+		lw := diffFileLayout(width, diffNumWidth(m.files[cur.file]))
+		out = append(out, diffStyle(diffSGRFaint, diffPadRight("before", lw.leftW)+" | "+diffPadRight("after", lw.rightW)))
+	}
+	return out
+}
+
+// atTop lays out the view from the first row to measure a full page for
+// pgup/pgdn, independent of the current scroll position.
+func (m DiffModel) atTop(rows []diffRow) diffViewLayout {
+	top := m
+	top.offset = 0
+	return top.layout(rows, top.effWidth())
+}
+
+// ackLine renders the pinned acknowledgement with its hint.
+func (m DiffModel) ackLine(width int) string {
+	box := "[ ]"
+	hint := "y accept · n undo"
+	if m.acked {
+		box = "[x]"
+		hint = "n undo"
+	}
+	left := box + " " + m.cfg.Acknowledge
+	if diffWidth(left)+diffWidth(hint)+2 <= width {
+		return diffStyle(diffSGRYellow+";"+diffSGRBold, left+strings.Repeat(" ", width-diffWidth(left)-diffWidth(hint))+hint)
+	}
+	return diffStyle(diffSGRYellow+";"+diffSGRBold, left)
+}
+
+// leaveLines renders the embedded leave question for the footer area.
+func (m DiffModel) leaveLines(width int) []string {
+	var out []string
+	for _, line := range strings.Split(m.leave.View(), "\n") {
+		for _, wrapped := range diffWrapLine(mustEscapePlain(line), width) {
+			out = append(out, wrapped)
+		}
+	}
+	return out
+}
+
+func (m DiffModel) footerLines(width int, rows []diffRow, lay diffViewLayout, total int) []string {
+	status := "lines 0 of 0"
+	if total > 0 {
+		a, b := lay.top+1, lay.top+len(lay.visible)
+		if b > total {
+			b = total
+		}
+		if a > total {
+			a = total
+		}
+		status = "lines " + diffItoa(a) + "-" + diffItoa(b) + " of " + diffItoa(total)
+		if n := diffTotalSections(m.files); n > 0 {
+			status += " · section " + diffItoa(diffSectionAt(rows, lay.top, n)) + "/" + diffItoa(n)
+		}
+		if below := total - (lay.top + len(lay.visible)); below > 0 {
+			status += " · " + diffItoa(below) + " more below"
+		}
+	}
+	return []string{diffStyle(diffSGRFaint, status), m.hintLine(width)}
+}
+
+// hintLine picks the longest hint that fits the width. The enter, esc, and
+// scroll hints survive longest.
+func (m DiffModel) hintLine(width int) string {
+	enter := "enter " + m.cfg.ApplyLabel
+	parts := []string{"↑/↓ k/j scroll", "pgup/pgdn page", "g/G top/bottom", "]/[ section", enter, "esc cancel", "ctrl+c exit"}
+	if m.cfg.Back {
+		parts = append(parts[:5], append([]string{"backspace back"}, parts[5:]...)...)
+	}
+	if m.cfg.Acknowledge != "" {
+		if m.acked {
+			parts = append(parts[:5], append([]string{"n undo"}, parts[5:]...)...)
+		} else {
+			parts = []string{"↑/↓ k/j scroll", "y accept", "esc cancel", "ctrl+c exit"}
+		}
+	}
+	full := strings.Join(parts, " · ")
+	if diffWidth(full) <= width {
+		return diffStyle(diffSGRFaint, full)
+	}
+	short := []string{"↑/↓ k/j scroll", "pgup/pgdn", "]/[ section", enter, "esc cancel"}
+	if m.cfg.Acknowledge != "" && !m.acked {
+		short = []string{"k/j scroll", "y accept", "esc cancel"}
+	}
+	if s := strings.Join(short, " · "); diffWidth(s) <= width {
+		return diffStyle(diffSGRFaint, s)
+	}
+	mini := []string{"k/j scroll", enter, "esc"}
+	if s := strings.Join(mini, " · "); diffWidth(s) <= width {
+		return diffStyle(diffSGRFaint, s)
+	}
+	last := enter + " · esc"
+	if diffWidth(last) <= width {
+		return diffStyle(diffSGRFaint, last)
+	}
+	return diffStyle(diffSGRFaint, "esc")
+}
+
+// fitHeight pads short views and cuts long ones to exactly height lines.
+func (m DiffModel) fitHeight(lines []string) string {
+	if m.height <= 0 {
+		return strings.Join(lines, "\n")
+	}
+	if len(lines) > m.height {
+		lines = lines[:m.height]
+	}
+	for len(lines) < m.height {
+		lines = append(lines, "")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// clampOffset keeps the scroll position inside the content.
+func (m DiffModel) clampOffset() DiffModel {
+	rows := len(m.contentRows(m.effWidth()))
+	if m.offset > rows {
+		m.offset = rows
+	}
+	if m.offset < 0 {
+		m.offset = 0
+	}
+	return m
+}
+
+// diffTotalSections counts sections across files.
+func diffTotalSections(files []DiffFile) int {
+	n := 0
+	for _, f := range files {
+		n += len(f.Sections)
+	}
+	return n
+}
+
+// diffSectionAt returns the 1-based section holding the top visible row.
+func diffSectionAt(rows []diffRow, top, total int) int {
+	for i := top; i < len(rows); i++ {
+		if rows[i].sec >= 0 {
+			return rows[i].sec + 1
+		}
+	}
+	return total
+}
+
+// diffContradiction rejects an absent side that lists lines on that side.
+// Equal ops count for both sides, so they contradict either absent flag.
+func diffContradiction(files []DiffFile) string {
+	for _, f := range files {
+		for _, s := range f.Sections {
+			for _, op := range s.Ops {
+				switch op.Kind {
+				case OpEqual:
+					if s.BeforeAbsent || s.AfterAbsent {
+						return "A section marks a side absent but lists lines on that side."
+					}
+				case OpDelete:
+					if s.BeforeAbsent {
+						return "A section marks its before side absent but lists before lines."
+					}
+				case OpInsert:
+					if s.AfterAbsent {
+						return "A section marks its after side absent but lists after lines."
+					}
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// diffIncompleteLines renders the incomplete state.
+func diffIncompleteLines(reason string) []string {
+	out := []string{diffStyle(diffSGRYellow+";"+diffSGRBold, "! The diff could not be prepared completely, so it cannot be applied.")}
+	if reason != "" {
+		for _, line := range strings.Split(reason, "\n") {
+			out = append(out, line)
+		}
+	}
+	return append(out, "Nothing was changed.")
+}
+
+// mustEscape escapes s for a refusal notice.
+func mustEscape(s string) string {
+	escaped, _ := diffEscape(s)
+	return escaped
+}
+
+// mustEscapePlain escapes s that may already carry SGR codes from another
+// renderer (the embedded leave question): strip those first so widths and
+// wrapping account for visible cells only.
+func mustEscapePlain(s string) string {
+	escaped, _ := diffEscape(stripSGR(s))
+	return escaped
+}
+
+// stripSGR removes SGR escape sequences.
+func stripSGR(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '[' {
+			j := i + 2
+			for j < len(s) && s[j] != 'm' {
+				j++
+			}
+			if j < len(s) {
+				i = j + 1
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
+}
+
+// RenderDiff renders the whole diff as static non-interactive text: the
+// same table layout at the given width, without footer or hints. Widths
+// below 1 default to 80 columns.
+func RenderDiff(files []DiffFile, width int) string {
+	return renderStatic(DiffConfig{}, files, width, false)
+}
+
+// renderStatic renders title, body, all rows, and the acknowledgement line.
+// checked marks the acknowledgement as armed; the standalone runner sets it
+// on confirm so the scrollback records what the user accepted.
+func renderStatic(cfg DiffConfig, files []DiffFile, width int, checked bool) string {
+	if width < 1 {
+		width = 80
+	}
+	var out []string
+	if cfg.Title != "" {
+		out = append(out, strings.Split(cfg.Title, "\n")...)
+	}
+	if cfg.Body != "" {
+		for _, paragraph := range strings.Split(cfg.Body, "\n") {
+			body, _ := diffEscape(paragraph)
+			out = append(out, diffWrapLine(body, width)...)
+		}
+	}
+	rows := staticRows(files, width)
+	for _, r := range rows {
+		out = append(out, r.text)
+	}
+	if cfg.Acknowledge != "" {
+		box := "[ ]"
+		if checked {
+			box = "[x]"
+		}
+		out = append(out, diffStyle(diffSGRYellow+";"+diffSGRBold, box+" "+cfg.Acknowledge))
+	}
+	return strings.Join(out, "\n")
+}
+
+// staticRows lays out every file's rows for the static render.
+func staticRows(files []DiffFile, width int) []diffRow {
+	var rows []diffRow
+	sec := 0
+	for i, f := range files {
+		sec = diffLayoutFile(f, i, sec, width, &rows)
+	}
+	return rows
+}
+
+// diffStandalone adapts the submodel to a tea.Model for one-shot runs.
+// Answered views render empty so only this inline frame clears on quit.
+// On confirm it first prints the whole static diff above the frame, which
+// persists in the scrollback.
+type diffStandalone struct {
+	inner   DiffModel
+	printed bool
+}
+
+func (s *diffStandalone) Init() tea.Cmd { return s.inner.Init() }
+
+func (s *diffStandalone) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := s.inner.Update(msg)
+	s.inner = next
+	if s.inner.Decision() == DiffConfirm && !s.printed {
+		s.printed = true
+		width := s.inner.effWidth()
+		return s, tea.Println(renderStatic(s.inner.cfg, s.inner.files, width, true))
+	}
+	if s.inner.Decision() != DiffPending {
+		return s, tea.Quit
+	}
+	return s, cmd
+}
+
+func (s *diffStandalone) View() tea.View {
+	if s.inner.Decision() != DiffPending {
+		return tea.NewView("")
+	}
+	return tea.NewView(s.inner.View())
+}
+
+// ReviewDiff runs the diff question as its own inline program and returns
+// the decision. On confirm the whole static diff stays in the scrollback;
+// on back, cancel, or interrupt the frame clears and the host prints the
+// outcome, e.g. "Cancelled; nothing was changed."
+func ReviewDiff(ctx context.Context, cfg DiffConfig, files []DiffFile, opts ...tea.ProgramOption) (DiffDecision, error) {
+	s := &diffStandalone{inner: NewDiff(cfg).WithFiles(files)}
+	_, err := tea.NewProgram(s, append(opts, tea.WithContext(ctx))...).Run()
+	if err != nil {
+		return DiffPending, err
+	}
+	return s.inner.Decision(), nil
+}

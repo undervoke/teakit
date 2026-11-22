@@ -31,6 +31,15 @@ if m.asking {
 }
 ```
 
+## Adopt the diff view
+
+| Application | Integration |
+|---|---|
+| On a wizard review step | When the plan has overrides, change the Apply button to open a diff stage hosting `teakit.NewDiff(cfg)`: route every key to the diff model on that stage and call `SetSize` with the box below the title bar. The diff's Enter is the single final submission; Backspace answers `teakit.DiffBack` only when the config enables it, which returns to the review step. |
+| As an inline confirmation | Call `teakit.ReviewDiff(ctx, cfg, files, tea.WithOutput(stderr))` after the preceding program has returned. On `teakit.DiffConfirm` the whole static diff stays in the scrollback above the frame, so the host needs no summary of its own; on back, cancel, or interrupt the frame clears and the host prints the outcome, e.g. `Cancelled; nothing was changed.` Handle the returned error, then apply on confirm or resume the previous screen otherwise. |
+
+Each tool decides **when** cancelling asks the leave question (pass `Leave` only when the selection would be lost), whether Back exists, and whether an extra acknowledgement gates Enter (pass `Acknowledge`, e.g. for irreversible data loss). The host checks for a TTY before an inline run; `ReviewDiff` does not decide interactivity. The model never quits the program: the owner reads `Decision()` and navigates. See the [runnable example](../examples/diff/main.go).
+
 ## Install or update a version
 
 1. Choose an exact tag from [Releases](https://github.com/undervoke/teakit/releases). Read the notes between your current version and the target; a v0 minor release can change the API or key behavior. `go list -m -versions github.com/undervoke/teakit` lists published Go versions.
