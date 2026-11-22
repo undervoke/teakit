@@ -40,6 +40,36 @@ if m.asking {
 
 Each tool decides **when** cancelling asks the leave question (pass `Leave` only when the selection would be lost), whether Back exists, and whether an extra acknowledgement gates Enter (pass `Acknowledge`, e.g. for irreversible data loss). The host checks for a TTY before an inline run; `ReviewDiff` does not decide interactivity. The model never quits the program: the owner reads `Decision()` and navigates. See the [runnable example](../examples/diff/main.go).
 
+## Adopt the step runner
+
+For a wizard that runs each screen as its own program, `teakit.Step` runs one screen and erases it when the user leaves. `Run` returns `nil` when an option was picked or the form ended, `teakit.ErrBack` when the user went back, and `teakit.ErrLeave` when they left the flow.
+
+| Screen | Integration |
+|---|---|
+| A list | Run `&teakit.Step{List: l, ...}`; after `nil`, `l.Cursor` is the option picked. For a value the options do not offer, set `l.Field = teakit.NewField(cfg)` with the unit, placeholder, and check, and read `l.Field.Value()`, which never includes the unit. |
+| A form | Pass the form through a small adapter implementing `teakit.Form`, and set `Text` when it is for typing text. teakit does not import huh. |
+| The leave question alone | Run a `Step` with neither `List` nor `Form`, e.g. for an Exit row; `nil` means the user stayed. |
+| A wait | `teakit.Wait(ctx, view, work)` returns what `work` returns, `context.Canceled` on Esc, or `teakit.ErrLeave` on Ctrl+C. |
+
+Each tool sets `Back` when a previous screen exists, `Unsaved` when leaving loses something (for example, a changed draft or setup answers past the first step), and `Leave` with the question's wording and hint. Hints such as "esc to go back" are the tool's wording too. For a huh form, the adapter is:
+
+```go
+type huhForm struct {
+    *huh.Form
+    first huh.Field // Shift+Tab here goes back
+}
+
+func (f huhForm) Update(msg tea.Msg) tea.Cmd {
+    _, cmd := f.Form.Update(msg)
+    return cmd
+}
+
+func (f huhForm) Done() bool    { return f.State != huh.StateNormal }
+func (f huhForm) AtFirst() bool { return f.GetFocusedField() == f.first }
+```
+
+A full-screen model can move its cursor with `teakit.Move`, so its options wrap like teakit lists.
+
 ## Install or update a version
 
 1. Choose an exact tag from [Releases](https://github.com/undervoke/teakit/releases). Read the notes between your current version and the target; a v0 minor release can change the API or key behavior. `go list -m -versions github.com/undervoke/teakit` lists published Go versions.

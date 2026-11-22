@@ -22,13 +22,15 @@ const (
 )
 
 // LeaveConfig supplies wording for the default view and extra answer keys.
-// StayKeys and LeaveKeys hold exact tea.Key names (for example "y" or "q");
-// anything else is left alone for the host. Built-ins always win.
+// Hint replaces the default key line. StayKeys and LeaveKeys hold exact
+// tea.Key names (for example "y" or "q"); anything else is left alone for
+// the host. Built-ins always win.
 type LeaveConfig struct {
 	Title      string
 	Body       string
 	StayLabel  string
 	LeaveLabel string
+	Hint       string
 	StayKeys   []string
 	LeaveKeys  []string
 }
@@ -118,8 +120,15 @@ func (m LeaveModel) View() string {
 		}
 		fmt.Fprintf(&b, "%s%d. %s\n", marker, i+1, label)
 	}
-	b.WriteString("\n↑/↓ k/j move · 1/2 or enter choose · esc leave · ctrl+c exit")
+	b.WriteString("\n" + leaveHint(m.cfg))
 	return b.String()
+}
+
+func leaveHint(cfg LeaveConfig) string {
+	if cfg.Hint != "" {
+		return cfg.Hint
+	}
+	return "↑/↓ k/j move · 1/2 or enter choose · esc leave · ctrl+c exit"
 }
 
 // Cursor returns the highlighted option's zero-based index: 0 for stay, 1 for
