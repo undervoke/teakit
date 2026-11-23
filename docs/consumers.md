@@ -68,6 +68,8 @@ func (f huhForm) Done() bool    { return f.State != huh.StateNormal }
 func (f huhForm) AtFirst() bool { return f.GetFocusedField() == f.first }
 ```
 
+To hide the shell's earlier text while the wizard runs, wrap the flow in `teakit.AltScreen(os.Stderr, func() error { ... })` and give every program inside the same writer with `tea.WithOutput(os.Stderr)`. The programs still draw inline, on the alternate screen, and everything printed there is gone when the flow returns, including the diff a confirmed `ReviewDiff` leaves; print `teakit.RenderDiff(files, width)` after `AltScreen` returns to keep it. Ctrl+C outside a program kills the process and leaves the terminal on the alternate screen, so run the flow under a context from `signal.NotifyContext(ctx, os.Interrupt)`.
+
 A full-screen model can move its cursor with `teakit.Move`, so its options wrap like teakit lists.
 
 ## Install or update a version

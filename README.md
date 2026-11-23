@@ -2,7 +2,7 @@
 
 Bubble Tea components with one set of key conventions, shared by my terminal tools. It is built for my own projects: the API may change at any time, and versions stay at v0.
 
-Start with the **leave question**: embed it in a full-screen model or run it as an inline wizard step. A wizard that runs each screen as its own program can run its lists, forms, and waits through the **step runner**. See [using and updating teakit](docs/consumers.md) for integration, version selection, and update PRs. Try the [example](examples/leave/main.go) from a checkout with `go run ./examples/leave`. The [diff example](examples/diff/main.go) runs an override review as an inline step with `go run ./examples/diff`.
+Start with the **leave question**: embed it in a full-screen model or run it as an inline wizard step. A wizard that runs each screen as its own program can run its lists, forms, and waits through the **step runner**, optionally on the alternate screen so the shell's earlier text stays hidden. See [using and updating teakit](docs/consumers.md) for integration, version selection, and update PRs. Try the [example](examples/leave/main.go) from a checkout with `go run ./examples/leave`. The [diff example](examples/diff/main.go) runs an override review as an inline step with `go run ./examples/diff`.
 
 Tagged versions, migration notes, and CI-built source archives are on [GitHub Releases](https://github.com/undervoke/teakit/releases). Maintainers: [cutting a release](docs/releasing.md).
 
@@ -18,7 +18,7 @@ teakit fixes what must behave the same in every tool, and each tool supplies wha
 | The static scrollback render left after a confirmed inline diff | Whether the host prints its own summary on top of it |
 | Numbered lists, cancellable waits, and text wrapping | What its screens show |
 | A list's typed field: sized to its text, with the unit as a fixed suffix, and without a unit the user types after the number | The unit, the placeholder, validation, and the form in which it stores the value |
-| An optional runner that runs each screen as its own program and erases the screen when the user leaves it | The flow between screens, when leaving loses something, whether to use the runner or a full-screen model, validation of its own values, and the wording of its screens and key hints |
+| An optional runner that runs each screen as its own program and erases the screen when the user leaves it | The flow between screens, when leaving loses something, whether to use the runner or a full-screen model, whether the flow runs on the alternate screen, validation of its own values, and the wording of its screens and key hints |
 
 A behavior becomes a tool-supplied setting only when two tools actually need it to differ; until then it stays fixed here.
 

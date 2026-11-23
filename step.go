@@ -3,8 +3,10 @@ package teakit
 import (
 	"context"
 	"errors"
+	"io"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 var (
@@ -70,6 +72,18 @@ func (s *Step) Run(ctx context.Context, opts ...tea.ProgramOption) error {
 		return err
 	}
 	return m.result
+}
+
+// AltScreen runs flow on the terminal's alternate screen, so the shell text
+// before it stays hidden until flow returns. The programs flow runs, such as
+// Step.Run, draw inline on that screen; give them out with tea.WithOutput.
+// Whatever flow prints there is gone when it returns.
+func AltScreen(out io.Writer, flow func() error) error {
+	if _, err := io.WriteString(out, ansi.SetModeAltScreenSaveCursor+ansi.EraseEntireScreen+ansi.CursorHomePosition); err != nil {
+		return err
+	}
+	defer io.WriteString(out, ansi.ResetModeAltScreenSaveCursor)
+	return flow()
 }
 
 type stepModel struct {
