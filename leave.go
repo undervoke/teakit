@@ -163,7 +163,8 @@ func (s *leaveStandalone) View() tea.View {
 }
 
 // AskLeave runs the question as its own inline program and returns the
-// decision.
+// decision. A program that ends without an answer, as on a termination
+// signal, returns Interrupt.
 func AskLeave(ctx context.Context, cfg LeaveConfig, opts ...tea.ProgramOption) (Decision, error) {
 	s := &leaveStandalone{inner: NewLeave(cfg)}
 	_, err := tea.NewProgram(s, append(opts, tea.WithContext(ctx))...).Run()
@@ -172,6 +173,9 @@ func AskLeave(ctx context.Context, cfg LeaveConfig, opts ...tea.ProgramOption) (
 			return Interrupt, nil
 		}
 		return Pending, err
+	}
+	if s.inner.Decision() == Pending {
+		return Interrupt, nil
 	}
 	return s.inner.Decision(), nil
 }

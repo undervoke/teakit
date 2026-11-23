@@ -61,7 +61,8 @@ type Step struct {
 
 // Run shows s until the user leaves it. It returns nil when an option was
 // picked, the form ended, or the user stayed at a lone leave question;
-// ErrBack when the user went back; and ErrLeave when they left the flow.
+// ErrBack when the user went back; and ErrLeave when they left the flow or
+// the program ended without an answer, as on a termination signal.
 func (s *Step) Run(ctx context.Context, opts ...tea.ProgramOption) error {
 	m := &stepModel{s: s}
 	if s.List != nil {
@@ -76,6 +77,9 @@ func (s *Step) Run(ctx context.Context, opts ...tea.ProgramOption) error {
 			return ErrLeave
 		}
 		return err
+	}
+	if !m.done {
+		return ErrLeave
 	}
 	return m.result
 }
@@ -253,7 +257,8 @@ func leaveList(cfg LeaveConfig, cursor int) *List {
 }
 
 // Wait shows view while work runs, and returns what work returns. Esc
-// cancels work's context and returns context.Canceled; ctrl+c returns
+// cancels work's context and returns context.Canceled; ctrl+c, or the
+// program ending before work does, as on a termination signal, returns
 // ErrLeave at once. When ctx ends first, Wait returns its error without
 // waiting for work, which should stop on its context.
 func Wait[T any](ctx context.Context, view func(width int) string, work func(context.Context) (T, error), opts ...tea.ProgramOption) (T, error) {
@@ -275,6 +280,9 @@ func Wait[T any](ctx context.Context, view func(width int) string, work func(con
 	var zero T
 	if _, err := tea.NewProgram(m, opts...).Run(); err != nil {
 		return zero, err
+	}
+	if !m.done {
+		return zero, ErrLeave
 	}
 	if m.result.err != nil && interrupted(ctx) {
 		return zero, ErrLeave

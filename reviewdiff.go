@@ -41,7 +41,8 @@ func (s *diffStandalone) View() tea.View {
 // ReviewDiff runs the diff question as its own inline program and returns
 // the decision. On confirm the whole static diff stays in the scrollback;
 // on any other answer the frame clears and the host prints the outcome, e.g.
-// "Cancelled; nothing was changed."
+// "Cancelled; nothing was changed." A program that ends without an answer,
+// as on a termination signal, returns DiffInterrupt.
 func ReviewDiff(ctx context.Context, cfg DiffConfig, files []DiffFile, opts ...tea.ProgramOption) (DiffDecision, error) {
 	s := &diffStandalone{inner: NewDiff(cfg).WithFiles(files)}
 	_, err := tea.NewProgram(s, append(opts, tea.WithContext(ctx))...).Run()
@@ -50,6 +51,9 @@ func ReviewDiff(ctx context.Context, cfg DiffConfig, files []DiffFile, opts ...t
 			return DiffInterrupt, nil
 		}
 		return DiffPending, err
+	}
+	if s.inner.Decision() == DiffPending {
+		return DiffInterrupt, nil
 	}
 	return s.inner.Decision(), nil
 }
