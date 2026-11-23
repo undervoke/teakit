@@ -9,6 +9,20 @@ import (
 // table. Below it the sections stack before above after.
 const minDiffSideCells = 24
 
+// diffRowKind distinguishes data from chrome and identifies rows across rewraps.
+type diffRowKind uint8
+
+const (
+	diffBodyRow diffRowKind = iota
+	diffPathRow
+	diffGapRow
+	diffColumnsRow
+	diffLabelRow
+	diffNoteRow
+	diffSideHeading
+	diffDataRow
+)
+
 // diffRow is one rendered content line. file and sec locate it for the
 // pinned context line and the section counter; chrome rows (headings,
 // labels, notes) carry the file and section they belong to.
@@ -18,8 +32,11 @@ type diffRow struct {
 	sec      int // global section index, or -1 for body rows
 	secStart bool
 	block    int // stacked block: 0 before, 1 after, -1 otherwise
-	path     string
-	label    string
+	kind     diffRowKind
+	item     int // paragraph or note index, or side for a stacked heading
+	part     int // wrapped fragment within the source row
+	before   int // source line numbers (0 when absent from this row)
+	after    int
 }
 
 // diffLayout holds one file's table geometry.
@@ -84,52 +101,39 @@ func diffDigits(n int) int {
 
 // diffLayoutFile renders one file's rows: path, blank, heading, then one
 // block per section. It returns the global section index after the file.
-func diffLayoutFile(f DiffFile, fileIdx, secBase, width int, rows *[]diffRow) int {
-	layout := diffFileLayout(width, diffNumWidth(f))
-	path, _ := diffEscape(f.Path)
-	for i, line := range diffWrapLine(path, width) {
-		if i > 0 {
-			line = "  " + line
-		}
-		*rows = append(*rows, diffRow{text: diffStyle(diffSGRBold, line), file: fileIdx, sec: secBase, path: f.Path})
+func diffLayoutFile(f DiffFile, fileIdx, secBase, width int, layout diffLayout, rows *[]diffRow) int {
+	for i, line := range diffWrapIndented(f.Path, width, 2) {
+		*rows = append(*rows, diffRow{text: diffStyle(diffSGRBold, line), file: fileIdx, sec: secBase, kind: diffPathRow, part: i})
 	}
-	*rows = append(*rows, diffRow{file: fileIdx, sec: secBase, path: f.Path})
+	*rows = append(*rows, diffRow{file: fileIdx, sec: secBase, kind: diffGapRow})
 	if layout.side {
 		*rows = append(*rows, diffRow{
 			text: diffStyle(diffSGRFaint, diffPadRight("before", layout.leftW)+" | "+diffPadRight("after", layout.rightW)),
-			file: fileIdx, sec: secBase, path: f.Path,
+			file: fileIdx, sec: secBase, kind: diffColumnsRow,
 		})
 	}
 	sec := secBase
 	for _, s := range f.Sections {
-		diffLayoutSection(s, fileIdx, sec, f.Path, width, layout, rows)
+		diffLayoutSection(s, fileIdx, sec, width, layout, rows)
 		sec++
 	}
 	return sec
 }
 
 // diffLayoutSection renders one section's label, notes, and content rows.
-func diffLayoutSection(s DiffSection, fileIdx, sec int, path string, width int, layout diffLayout, rows *[]diffRow) {
-	label, _ := diffEscape(s.Label)
-	for i, line := range diffWrapLine("@ "+label, width) {
-		if i > 0 {
-			line = "  " + line
-		}
-		*rows = append(*rows, diffRow{text: diffStyle(diffSGRBold+";"+diffSGRCyan, line), file: fileIdx, sec: sec, secStart: i == 0, path: path, label: s.Label})
+func diffLayoutSection(s DiffSection, fileIdx, sec, width int, layout diffLayout, rows *[]diffRow) {
+	for i, line := range diffWrapIndented("@ "+s.Label, width, 2) {
+		*rows = append(*rows, diffRow{text: diffStyle(diffSGRBold+";"+diffSGRCyan, line), file: fileIdx, sec: sec, secStart: i == 0, kind: diffLabelRow, part: i})
 	}
-	for _, note := range s.Notes {
-		text, _ := diffEscape(note)
-		for i, line := range diffWrapLine("  note: "+text, width) {
-			if i > 0 {
-				line = strings.Repeat(" ", 8) + line
-			}
-			*rows = append(*rows, diffRow{text: diffStyle(diffSGRFaint, line), file: fileIdx, sec: sec, path: path, label: s.Label})
+	for j, note := range s.Notes {
+		for i, line := range diffWrapIndented("  note: "+note, width, 8) {
+			*rows = append(*rows, diffRow{text: diffStyle(diffSGRFaint, line), file: fileIdx, sec: sec, kind: diffNoteRow, item: j, part: i})
 		}
 	}
 	if layout.side {
-		diffSideSection(s, fileIdx, sec, path, layout, rows)
+		diffSideSection(s, fileIdx, sec, layout, rows)
 	} else {
-		diffStackedSection(s, fileIdx, sec, path, width, layout, rows)
+		diffStackedSection(s, fileIdx, sec, width, layout, rows)
 	}
 }
 
@@ -165,7 +169,7 @@ func diffItems(s DiffSection) (oldItems, newItems []diffContentItem) {
 // maximal run of non-equal ops, deletes fill the left in order and inserts
 // fill the right; row i pairs the i-th of each, and the shorter side gets
 // blank cells.
-func diffSideSection(s DiffSection, fileIdx, sec int, path string, layout diffLayout, rows *[]diffRow) {
+func diffSideSection(s DiffSection, fileIdx, sec int, layout diffLayout, rows *[]diffRow) {
 	oldItems, newItems := diffItems(s)
 	leftPH, rightPH := diffPlaceholders(s, len(oldItems) == 0, len(newItems) == 0)
 	oi, ni := 0, 0
@@ -180,18 +184,24 @@ func diffSideSection(s DiffSection, fileIdx, sec int, path string, layout diffLa
 		}
 		for i := 0; i < height; i++ {
 			l, r := "", ""
+			var before, after int
 			if i < len(left) {
 				l = left[i]
+				if o != nil {
+					before = o.no
+				}
 			}
 			if i < len(right) {
 				r = right[i]
+				if n != nil {
+					after = n.no
+				}
 			}
 			*rows = append(*rows, diffRow{
-				text:  diffPadRight(l, layout.leftW) + diffStyle(diffSGRFaint, " | ") + diffPadRight(r, layout.rightW),
-				file:  fileIdx,
-				sec:   sec,
-				path:  path,
-				label: s.Label,
+				text: diffPadRight(l, layout.leftW) + diffStyle(diffSGRFaint, " | ") + diffPadRight(r, layout.rightW),
+				file: fileIdx,
+				sec:  sec,
+				kind: diffDataRow, part: i, before: before, after: after,
 			})
 		}
 	}
@@ -259,11 +269,7 @@ func diffSideCell(item *diffContentItem, placeholder string, first bool, layout 
 		}
 		return nil
 	}
-	text, _ := diffEscape(item.op.Text)
-	lines := diffWrapLine(text, layout.textW)
-	if len(lines) == 0 {
-		lines = []string{""}
-	}
+	lines := diffWrapLine(item.op.Text, layout.textW)
 	num := diffStyle(diffSGRFaint, diffPadLeft(diffItoa(item.no), layout.numWidth))
 	mark := diffCellMark(item.op.Kind)
 	var cell []string
@@ -296,25 +302,25 @@ func diffCellMark(kind DiffOpKind) string {
 
 // diffStackedSection renders a section as a before block above an after
 // block, each with its own numbers. Equal lines appear in both.
-func diffStackedSection(s DiffSection, fileIdx, sec int, path string, width int, layout diffLayout, rows *[]diffRow) {
+func diffStackedSection(s DiffSection, fileIdx, sec, width int, layout diffLayout, rows *[]diffRow) {
 	oldItems, newItems := diffItems(s)
-	diffStackedBlock("before", oldItems, s.BeforeAbsent, fileIdx, sec, path, s.Label, width, layout, rows)
-	diffStackedBlock("after", newItems, s.AfterAbsent, fileIdx, sec, path, s.Label, width, layout, rows)
+	diffStackedBlock("before", oldItems, s.BeforeAbsent, fileIdx, sec, width, layout, rows)
+	diffStackedBlock("after", newItems, s.AfterAbsent, fileIdx, sec, width, layout, rows)
 }
 
 // diffStackedBlock renders one stacked block with its heading.
-func diffStackedBlock(heading string, items []diffContentItem, absent bool, fileIdx, sec int, path, label string, width int, layout diffLayout, rows *[]diffRow) {
+func diffStackedBlock(heading string, items []diffContentItem, absent bool, fileIdx, sec, width int, layout diffLayout, rows *[]diffRow) {
 	block := 0
 	if heading == "after" {
 		block = 1
 	}
-	*rows = append(*rows, diffRow{text: diffStyle(diffSGRFaint, heading), file: fileIdx, sec: sec, block: block, path: path, label: label})
+	*rows = append(*rows, diffRow{text: diffStyle(diffSGRFaint, heading), file: fileIdx, sec: sec, block: block, kind: diffSideHeading, item: block})
 	if absent {
-		*rows = append(*rows, diffRow{text: diffPlaceholder("(absent)"), file: fileIdx, sec: sec, block: block, path: path, label: label})
+		*rows = append(*rows, diffRow{text: diffPlaceholder("(absent)"), file: fileIdx, sec: sec, block: block, kind: diffDataRow})
 		return
 	}
 	if len(items) == 0 {
-		*rows = append(*rows, diffRow{text: diffPlaceholder("(empty)"), file: fileIdx, sec: sec, block: block, path: path, label: label})
+		*rows = append(*rows, diffRow{text: diffPlaceholder("(empty)"), file: fileIdx, sec: sec, block: block, kind: diffDataRow})
 		return
 	}
 	textW := width - (layout.numWidth + 3)
@@ -323,11 +329,7 @@ func diffStackedBlock(heading string, items []diffContentItem, absent bool, file
 	}
 	for _, item := range items {
 		item := item
-		text, _ := diffEscape(item.op.Text)
-		lines := diffWrapLine(text, textW)
-		if len(lines) == 0 {
-			lines = []string{""}
-		}
+		lines := diffWrapLine(item.op.Text, textW)
 		num := diffStyle(diffSGRFaint, diffPadLeft(diffItoa(item.no), layout.numWidth))
 		mark := diffCellMark(item.op.Kind)
 		for i, line := range lines {
@@ -341,7 +343,13 @@ func diffStackedBlock(heading string, items []diffContentItem, absent bool, file
 			} else if item.op.Kind == OpInsert {
 				body = diffStyle(diffSGRGreen, line)
 			}
-			*rows = append(*rows, diffRow{text: n + " " + mark + " " + body, file: fileIdx, sec: sec, block: block, path: path, label: label})
+			r := diffRow{text: n + " " + mark + " " + body, file: fileIdx, sec: sec, block: block, kind: diffDataRow, part: i}
+			if block == 0 {
+				r.before = item.no
+			} else {
+				r.after = item.no
+			}
+			*rows = append(*rows, r)
 		}
 	}
 }

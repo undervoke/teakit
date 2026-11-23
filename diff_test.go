@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -51,13 +52,18 @@ func diffPress(m DiffModel, name string) DiffModel {
 	return next
 }
 
-// diffArmed runs fn with the settle delay disabled and restores it after.
-func diffArmed(t *testing.T, fn func()) {
+// diffArm runs the same Init/Update commands the host forwards, without a wait.
+func diffArm(t *testing.T, m DiffModel) DiffModel {
 	t.Helper()
 	old := diffSettleDelay
 	diffSettleDelay = 0
 	defer func() { diffSettleDelay = old }()
-	fn()
+	m, tick := m.Update(m.Init()())
+	if tick == nil {
+		t.Fatal("fixture has no visible diff to settle")
+	}
+	m, _ = m.Update(tick())
+	return m
 }
 
 // TestDiffAnswerGuards is the consent test: Enter and the alternate key
@@ -112,72 +118,53 @@ func diffAnswerGuards(t *testing.T, enter tea.KeyPressMsg, want DiffDecision) {
 			t.Fatalf("Enter on contradictory diff decided %v", next.Decision())
 		}
 	})
-	t.Run("Settle", func(t *testing.T) {
-		m := NewDiff(plain).WithFiles(files)
+	t.Run("Unacknowledged", func(t *testing.T) {
+		m := diffArm(t, NewDiff(ack).WithFiles(files).SetSize(80, 12))
 		next, _ := m.Update(enter)
 		if next.Decision() != DiffPending {
-			t.Fatalf("Enter before the settle delay decided %v", next.Decision())
+			t.Fatalf("unacknowledged Enter decided %v", next.Decision())
 		}
 	})
-	t.Run("Unacknowledged", func(t *testing.T) {
-		diffArmed(t, func() {
-			m := NewDiff(ack).WithFiles(files)
-			next, _ := m.Update(enter)
-			if next.Decision() != DiffPending {
-				t.Fatalf("unacknowledged Enter decided %v", next.Decision())
-			}
-		})
-	})
 	t.Run("TooSmall", func(t *testing.T) {
-		diffArmed(t, func() {
-			m := NewDiff(ack).WithFiles(files).SetSize(20, 5)
-			if next, _ := m.Update(enter); next.Decision() != DiffPending {
-				t.Fatalf("Enter on a too-small diff decided %v", next.Decision())
-			}
-		})
+		m := diffArm(t, NewDiff(plain).WithFiles(files).SetSize(80, 12)).SetSize(20, 5)
+		if next, _ := m.Update(enter); next.Decision() != DiffPending {
+			t.Fatalf("Enter on a too-small diff decided %v", next.Decision())
+		}
 	})
 	t.Run("Repeat", func(t *testing.T) {
-		diffArmed(t, func() {
-			m := NewDiff(ack).WithFiles(files)
-			m = diffPress(m, "y")
-			repeat := enter
-			repeat.IsRepeat = true
-			rep, _ := m.Update(repeat)
-			if rep.Decision() != DiffPending {
-				t.Fatalf("repeat Enter decided %v", rep.Decision())
-			}
-		})
+		m := diffArm(t, NewDiff(ack).WithFiles(files).SetSize(80, 12))
+		m = diffPress(m, "y")
+		repeat := enter
+		repeat.IsRepeat = true
+		rep, _ := m.Update(repeat)
+		if rep.Decision() != DiffPending {
+			t.Fatalf("repeat Enter decided %v", rep.Decision())
+		}
 	})
 	t.Run("PastedY", func(t *testing.T) {
-		diffArmed(t, func() {
-			m := NewDiff(ack).WithFiles(files)
-			next, _ := m.Update(tea.PasteMsg{Content: "y\n"})
-			if next.Decision() != DiffPending {
-				t.Fatalf("PasteMsg decided %v", next.Decision())
-			}
-			if nxt, _ := next.Update(enter); nxt.Decision() != DiffPending {
-				t.Fatalf("pasted y armed the acknowledgement")
-			}
-		})
+		m := diffArm(t, NewDiff(ack).WithFiles(files).SetSize(80, 12))
+		next, _ := m.Update(tea.PasteMsg{Content: "y\n"})
+		if next.Decision() != DiffPending {
+			t.Fatalf("PasteMsg decided %v", next.Decision())
+		}
+		if nxt, _ := next.Update(enter); nxt.Decision() != DiffPending {
+			t.Fatalf("pasted y armed the acknowledgement")
+		}
 	})
 	t.Run("Confirm", func(t *testing.T) {
-		diffArmed(t, func() {
-			m := NewDiff(ack).WithFiles(files)
-			m = diffPress(m, "y")
-			if next, _ := m.Update(enter); next.Decision() != want {
-				t.Fatalf("armed acknowledged Enter decided %v", next.Decision())
-			}
-		})
+		m := diffArm(t, NewDiff(ack).WithFiles(files).SetSize(80, 12))
+		m = diffPress(m, "y")
+		if next, _ := m.Update(enter); next.Decision() != want {
+			t.Fatalf("armed acknowledged Enter decided %v", next.Decision())
+		}
 	})
 	t.Run("ResetOnNewContent", func(t *testing.T) {
-		diffArmed(t, func() {
-			m := NewDiff(ack).WithFiles(files)
-			m = diffPress(m, "y")
-			m = m.WithFiles(files)
-			if next, _ := m.Update(enter); next.Decision() != DiffPending {
-				t.Fatalf("replacement content kept the old acknowledgement")
-			}
-		})
+		m := diffArm(t, NewDiff(ack).WithFiles(files).SetSize(80, 12))
+		m = diffPress(m, "y")
+		m = diffArm(t, m.WithFiles(files))
+		if next, _ := m.Update(enter); next.Decision() != DiffPending {
+			t.Fatalf("replacement content kept the old acknowledgement")
+		}
 	})
 }
 
@@ -247,22 +234,95 @@ func TestDiffEscapeStripsControlBytes(t *testing.T) {
 	}
 }
 
-// TestDiffAckFlow checks y arming, n disarming, and repeat-y through Update.
+// TestDiffWrappedEscapeIsHighlighted catches wrappers that split a marked escape or drop its reverse style.
+func TestDiffWrappedEscapeIsHighlighted(t *testing.T) {
+	files := diffTestFiles()
+	files[0].Sections[0].Ops = []DiffOp{{Kind: OpInsert, Text: strings.Repeat("a", 32) + "\x01" + `\x01`}}
+	out := RenderDiff(files, 80)
+	if strings.Count(out, "\x1b[7m"+`\x01`) != 1 || strings.Count(ansi.Strip(out), `\x01`) != 2 {
+		t.Fatalf("the wrapped control byte must be distinguishable from the literal escape:\n%q", out)
+	}
+}
+
+// TestDiffLeaveControlSequenceDoesNotEatText catches a CSI stripper that eats title text while scanning for 'm'.
+func TestDiffLeaveControlSequenceDoesNotEatText(t *testing.T) {
+	cfg := DiffConfig{Leave: &LeaveConfig{Title: "\x1b[2JPreserve this message"}}
+	m := diffPress(NewDiff(cfg).WithFiles(diffTestFiles()).SetSize(80, 12), "esc")
+	if view := ansi.Strip(m.View()); !strings.Contains(view, "Preserve this message") {
+		t.Fatalf("leave title lost text after a CSI sequence:\n%s", view)
+	}
+}
+
+// TestDiffContinuationWidth catches adding indents after a row has already filled its width.
+func TestDiffContinuationWidth(t *testing.T) {
+	const width = 80
+	for _, field := range []string{"path", "label", "note"} {
+		t.Run(field, func(t *testing.T) {
+			files := diffTestFiles()
+			text := strings.Repeat("x", width*3) + "end"
+			switch field {
+			case "path":
+				files[0].Path = text
+			case "label":
+				files[0].Sections[0].Label = text
+			case "note":
+				files[0].Sections[0].Notes = []string{text}
+			}
+			view := ansi.Strip(RenderDiff(files, width))
+			for _, row := range strings.Split(view, "\n") {
+				if n := ansi.StringWidth(row); n > width {
+					t.Errorf("continuation exceeds width: %d > %d", n, width)
+				}
+			}
+			if !strings.Contains(view, "end") {
+				t.Fatal("continuation lost its tail")
+			}
+		})
+	}
+}
+
+// TestDiffTabAfterGrapheme catches counting emoji runes separately and missing a tab stop.
+func TestDiffTabAfterGrapheme(t *testing.T) {
+	files := diffTestFiles()
+	files[0].Sections[0].Ops = []DiffOp{{Kind: OpInsert, Text: "👩‍💻\tend"}}
+	if got := ansi.Strip(RenderDiff(files, 80)); !strings.Contains(got, "👩‍💻  end") {
+		t.Fatalf("tab after a two-cell grapheme misses the four-cell stop:\n%s", got)
+	}
+}
+
+// TestDiffWrapRetainedTailBeforeWideGrapheme catches appending a wide glyph to a tail that no longer fits it.
+func TestDiffWrapRetainedTailBeforeWideGrapheme(t *testing.T) {
+	const width = 30
+	body := " " + strings.Repeat("x", width-1) + "界"
+	view := ansi.Strip(renderStatic(DiffConfig{Body: body}, nil, width, false))
+	for _, row := range strings.Split(view, "\n") {
+		if n := ansi.StringWidth(row); n > width {
+			t.Errorf("wrapped row exceeds width: %d > %d", n, width)
+		}
+	}
+	if strings.ReplaceAll(view, "\n", "") != body {
+		t.Fatalf("wrapping lost content: %q", view)
+	}
+}
+
+// TestDiffAckFlow catches repeat y arming consent or n failing to disarm it.
 func TestDiffAckFlow(t *testing.T) {
-	diffArmed(t, func() {
-		enter := tea.KeyPressMsg{Code: rune(tea.KeyEnter)}
-		m := NewDiff(DiffConfig{Acknowledge: "Discard"}).WithFiles(diffTestFiles())
-		m = diffPress(m, "n")
-		if next, _ := m.Update(enter); next.Decision() != DiffPending {
-			t.Fatalf("Enter after n decided %v", next.Decision())
-		}
-		m = diffPress(m, "y")
-		rep, _ := m.Update(tea.KeyPressMsg{Code: 'y', Text: "y", IsRepeat: true})
-		m = rep
-		if next, _ := m.Update(enter); next.Decision() != DiffConfirm {
-			t.Fatalf("repeat y disarmed the acknowledgement")
-		}
-	})
+	enter := tea.KeyPressMsg{Code: tea.KeyEnter}
+	m := diffArm(t, NewDiff(DiffConfig{Acknowledge: "Discard"}).WithFiles(diffTestFiles()).SetSize(80, 12))
+	repeatY := tea.KeyPressMsg{Code: 'y', Text: "y", IsRepeat: true}
+	repeated, _ := m.Update(repeatY)
+	if next, _ := repeated.Update(enter); next.Decision() != DiffPending {
+		t.Errorf("repeat y armed the acknowledgement: %v", next.Decision())
+	}
+	m = diffPress(diffPress(m, "y"), "n")
+	if next, _ := m.Update(enter); next.Decision() != DiffPending {
+		t.Errorf("Enter after n decided %v", next.Decision())
+	}
+	m = diffPress(m, "y")
+	m, _ = m.Update(repeatY)
+	if next, _ := m.Update(enter); next.Decision() != DiffConfirm {
+		t.Fatalf("repeat y disarmed the acknowledgement")
+	}
 }
 
 // TestDiffViewHeight requires exactly height lines whenever a height is set.
@@ -303,35 +363,84 @@ func TestDiffBottomShowsLastPage(t *testing.T) {
 	}
 }
 
+// TestDiffNoRowsCannotAnswer catches skipping the visibility guard or clipping its refusal under the title.
 func TestDiffNoRowsCannotAnswer(t *testing.T) {
-	diffArmed(t, func() {
-		cfg := DiffConfig{AlternateKey: "c", Title: strings.Repeat("Title\n", 12)}
-		m := NewDiff(cfg).WithFiles(diffTestFiles()).SetSize(80, 12)
-		for _, key := range []tea.KeyPressMsg{{Code: tea.KeyEnter}, {Code: 'c', Text: "c"}} {
-			next, _ := m.Update(key)
-			if next.Decision() != DiffPending {
-				t.Errorf("%s answered a diff with no rows: %v", key, next.Decision())
-			}
+	cfg := DiffConfig{AlternateKey: "c", Title: strings.Repeat("Title\n", 12)}
+	m := diffArm(t, NewDiff(cfg).WithFiles(diffTestFiles()).SetSize(80, 30)).SetSize(80, 12)
+	for _, key := range []tea.KeyPressMsg{{Code: tea.KeyEnter}, {Code: 'c', Text: "c"}} {
+		next, _ := m.Update(key)
+		if next.Decision() != DiffPending {
+			t.Errorf("%s answered a diff with no rows: %v", key, next.Decision())
 		}
-	})
+		if view := ansi.Strip(next.View()); !strings.Contains(view, "No diff data is visible") {
+			t.Errorf("refusal was not shown when the title filled the box:\n%s", view)
+		}
+	}
 }
 
-func TestDiffPageDown(t *testing.T) {
-	m := NewDiff(DiffConfig{}).WithFiles(diffLongTestFiles()).SetSize(80, 12)
-	key := tea.KeyPressMsg{Code: tea.KeyPgDown}
-	if !strings.Contains(ansi.Strip(m.View()), key.String()) {
-		t.Errorf("hint omits %s", key)
+// diffFirstChange reads the first numbered change from the rendered fixture.
+func diffFirstChange(m DiffModel) string {
+	_, rest, found := strings.Cut(ansi.Strip(m.View()), "change ")
+	if !found || len(rest) < 2 {
+		return ""
 	}
-	m, _ = m.Update(key)
-	if view := ansi.Strip(m.View()); !strings.Contains(view, "change 12") {
-		t.Errorf("Page Down didn't scroll a page:\n%s", view)
+	return rest[:2]
+}
+
+// TestDiffPageDownWithPinnedContext catches using the unpinned height and skipping unseen rows.
+func TestDiffPageDownWithPinnedContext(t *testing.T) {
+	m := NewDiff(DiffConfig{}).WithFiles(diffLongTestFiles()).SetSize(80, 12)
+	for range 4 {
+		m = diffPress(m, "j")
+	}
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
+	if first := diffFirstChange(m); first != "09" {
+		t.Fatalf("Page Down from a pinned view should start at the next unseen row, got %q:\n%s", first, ansi.Strip(m.View()))
+	}
+}
+
+// TestDiffResizeKeepsSourceRow catches dropping the anchor and jumping to the file top.
+func TestDiffResizeKeepsSourceRow(t *testing.T) {
+	m := NewDiff(DiffConfig{}).WithFiles(diffLongTestFiles()).SetSize(80, 12)
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
+	first := diffFirstChange(m)
+	if first == "" || first == "01" {
+		t.Fatalf("fixture did not scroll inside the section: %q", first)
+	}
+	for _, w := range []int{80, 48} {
+		if got := diffFirstChange(m.SetSize(w, 13)); got != first {
+			t.Errorf("resize to %d columns jumped to %q, want source row %q", w, got, first)
+		}
+	}
+}
+
+// TestDiffRespectsHostSize catches a terminal resize overwriting the embedder's allotted box.
+func TestDiffRespectsHostSize(t *testing.T) {
+	m := NewDiff(DiffConfig{}).WithFiles(diffTestFiles())
+	if _, tick := m.Update(m.Init()()); tick != nil {
+		t.Error("an unsized diff started settling")
+	}
+	msg := tea.WindowSizeMsg{Width: 100, Height: 24}
+	if next, tick := m.Update(msg); tick == nil || len(strings.Split(next.View(), "\n")) != msg.Height {
+		t.Error("standalone sizing did not use the terminal height")
+	}
+	m = m.SetSize(60, 10)
+	m, _ = m.Update(msg)
+	lines := strings.Split(ansi.Strip(m.View()), "\n")
+	if len(lines) != 10 {
+		t.Errorf("terminal message replaced the host height: %d", len(lines))
+	}
+	for _, line := range lines {
+		if ansi.StringWidth(line) > 60 {
+			t.Errorf("terminal message replaced the host width: %q", line)
+		}
 	}
 }
 
 // TestDiffLeaveCancel checks the embedded leave question: one Esc opens it,
 // the second Esc cancels, and Ctrl+C interrupts from inside it.
 func TestDiffLeaveCancel(t *testing.T) {
-	m := NewDiff(DiffConfig{Leave: &LeaveConfig{Title: "Leave?"}}).WithFiles(diffTestFiles())
+	m := NewDiff(DiffConfig{Leave: &LeaveConfig{Title: "Leave?"}}).WithFiles(diffTestFiles()).SetSize(80, 12)
 	m = diffPress(m, "esc")
 	if m.Decision() != DiffPending {
 		t.Fatalf("first Esc decided %v", m.Decision())
@@ -343,7 +452,7 @@ func TestDiffLeaveCancel(t *testing.T) {
 	if m.Decision() != DiffCancel {
 		t.Fatalf("Esc Esc decided %v, want Cancel", m.Decision())
 	}
-	m = NewDiff(DiffConfig{Leave: &LeaveConfig{Title: "Leave?"}}).WithFiles(diffTestFiles())
+	m = NewDiff(DiffConfig{Leave: &LeaveConfig{Title: "Leave?"}}).WithFiles(diffTestFiles()).SetSize(80, 12)
 	m = diffPress(m, "esc")
 	m2, _ := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	if m2.Decision() != DiffInterrupt {
@@ -393,5 +502,100 @@ func TestDiffLeaveQuestionDoesNotFit(t *testing.T) {
 	}
 	if next, _ := m.Update(esc); next.Decision() != DiffCancel {
 		t.Errorf("Esc didn't answer the question after resize: %v", next.Decision())
+	}
+}
+
+// TestDiffHelpShowsAvailableAction catches advertising a shadowed key or losing y in narrow help.
+func TestDiffHelpShowsAvailableAction(t *testing.T) {
+	t.Run("shadowed alternate", func(t *testing.T) {
+		m := NewDiff(DiffConfig{AlternateKey: "j", AlternateLabel: "publish"}).WithFiles(diffLongTestFiles()).SetSize(120, 12)
+		if view := ansi.Strip(m.View()); strings.Contains(view, "publish") {
+			t.Fatalf("help advertised an alternate action bound to scrolling:\n%s", view)
+		}
+	})
+	t.Run("narrow acknowledgement", func(t *testing.T) {
+		m := NewDiff(DiffConfig{Acknowledge: "Discard"}).WithFiles(diffTestFiles()).SetSize(30, 14)
+		if view := ansi.Strip(m.View()); !strings.Contains(view, "y accept") {
+			t.Fatalf("help didn't show how to acknowledge:\n%s", view)
+		}
+	})
+}
+
+// TestDiffCannotAcknowledgeWhileTooSmall catches handling y without checking visibility.
+func TestDiffCannotAcknowledgeWhileTooSmall(t *testing.T) {
+	m := diffArm(t, NewDiff(DiffConfig{Acknowledge: "Discard"}).WithFiles(diffTestFiles()).SetSize(80, 12))
+	m = diffPress(m.SetSize(20, 5), "y").SetSize(80, 12)
+	if next := diffPress(m, "enter"); next.Decision() != DiffPending {
+		t.Fatal("acknowledgement on a too-small screen allowed consent after resize")
+	}
+}
+
+// TestDiffPreloadWaitsForSettleMessage catches starting the settle timer during preload.
+func TestDiffPreloadWaitsForSettleMessage(t *testing.T) {
+	old := diffSettleDelay
+	diffSettleDelay = 10 * time.Millisecond
+	t.Cleanup(func() { diffSettleDelay = old })
+	m := NewDiff(DiffConfig{}).WithFiles(diffTestFiles()).SetSize(80, 12)
+	time.Sleep(diffSettleDelay) // simulate a preloaded diff before the program starts
+	if next := diffPress(m, "enter"); next.Decision() != DiffPending {
+		t.Fatalf("preloading armed consent before the program started: %v", next.Decision())
+	}
+	start := m.Init()
+	if start == nil {
+		t.Fatal("Init did not start the settle message flow")
+	}
+	m, tick := m.Update(start())
+	if tick == nil {
+		t.Fatal("visible diff did not schedule the settle tick")
+	}
+	if next := diffPress(m, "enter"); next.Decision() != DiffPending {
+		t.Fatalf("consent was accepted before delivering the settle message: %v", next.Decision())
+	}
+	m, _ = m.Update(tick())
+	if next := diffPress(m, "enter"); next.Decision() != DiffConfirm {
+		t.Fatalf("visible diff could not be confirmed after the settle message: %v", next.Decision())
+	}
+}
+
+// TestDiffIgnoresSettleForReplacedFiles catches a stale timer arming replacement content.
+func TestDiffIgnoresSettleForReplacedFiles(t *testing.T) {
+	old := diffSettleDelay
+	diffSettleDelay = 0
+	t.Cleanup(func() { diffSettleDelay = old })
+	m := NewDiff(DiffConfig{}).WithFiles(diffTestFiles()).SetSize(80, 12)
+	m, oldTick := m.Update(m.Init()())
+	m = m.WithFiles(diffLongTestFiles())
+	m, currentTick := m.Update(m.Init()())
+	m, _ = m.Update(oldTick())
+	if next := diffPress(m, "enter"); next.Decision() != DiffPending {
+		t.Fatalf("a stale settle message armed the replacement diff: %v", next.Decision())
+	}
+	m, _ = m.Update(currentTick())
+	if next := diffPress(m, "enter"); next.Decision() != DiffConfirm {
+		t.Fatalf("the replacement diff did not settle on its own message: %v", next.Decision())
+	}
+}
+
+// TestDiffHeadersAloneCannotConfirm catches counting file headers as visible data.
+func TestDiffHeadersAloneCannotConfirm(t *testing.T) {
+	files := diffTestFiles()
+	files[0].Sections[0].Notes = []string{"review note"}
+	m := diffArm(t, NewDiff(DiffConfig{}).WithFiles(files).SetSize(80, 12)).SetSize(80, 7)
+	next := diffPress(m, "enter")
+	if next.Decision() != DiffPending {
+		t.Fatalf("a file header without data allowed consent: %v", next.Decision())
+	}
+	if view := ansi.Strip(next.View()); !strings.Contains(view, "No diff data is visible") {
+		t.Fatalf("no-data refusal wasn't shown:\n%s", view)
+	}
+}
+
+// TestDiffResizeUsesReviewedSnapshot catches a reflow reading mutated caller slices.
+func TestDiffResizeUsesReviewedSnapshot(t *testing.T) {
+	files := diffLongTestFiles()
+	m := NewDiff(DiffConfig{}).WithFiles(files).SetSize(80, 12)
+	files[0].Sections[0].Ops[0].Text = "unreviewed change"
+	if view := ansi.Strip(m.SetSize(75, 12).View()); !strings.Contains(view, "change 01") {
+		t.Fatalf("a resize picked up caller mutations instead of the reviewed snapshot:\n%s", view)
 	}
 }

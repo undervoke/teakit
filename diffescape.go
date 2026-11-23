@@ -1,8 +1,5 @@
 // Escape and measurement helpers for the diff view.
-//
-// The layout measures and wraps the escaped text, so a hostile or stray
-// control character shows up visibly instead of breaking the table or
-// reaching the terminal raw.
+// Escaped controls stay visible without reaching the terminal as raw input.
 package teakit
 
 import (
@@ -13,21 +10,19 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// SGR attribute codes used by the diff view. Colors are foreground ANSI-16
-// indices without backgrounds; the terminal's own palette decides the shade.
+// SGR attributes used by the diff view. Colors are ANSI-16 foreground
+// indices, so the terminal's palette decides the shade.
 const (
-	diffSGRBold    = "1"
-	diffSGRFaint   = "2"
-	diffSGRChar    = "3"
-	diffSGRReverse = "7"
-	diffSGRRed     = "31"
-	diffSGRGreen   = "32"
-	diffSGRYellow  = "33"
-	diffSGRCyan    = "36"
+	diffSGRBold   = "1"
+	diffSGRFaint  = "2"
+	diffSGRChar   = "3"
+	diffSGRRed    = "31"
+	diffSGRGreen  = "32"
+	diffSGRYellow = "33"
+	diffSGRCyan   = "36"
 )
 
-// diffStyle wraps s in one SGR sequence. An empty string stays empty so
-// blank cells never emit stray resets.
+// diffStyle wraps nonempty text in SGR without styling blank cells.
 func diffStyle(code, s string) string {
 	if s == "" {
 		return ""
@@ -35,88 +30,61 @@ func diffStyle(code, s string) string {
 	return "\x1b[" + code + "m" + s + "\x1b[0m"
 }
 
-// diffWidth reports the visible cell width, ignoring SGR sequences.
-func diffWidth(s string) int {
-	return ansi.StringWidth(s)
-}
+// diffWidth measures visible terminal cells, ignoring SGR sequences.
+func diffWidth(s string) int { return ansi.StringWidth(s) }
 
-// diffPadRight pads s with spaces to exactly width cells. Strings already
-// wider than width are returned unchanged.
+// diffPadRight pads to width cells without truncating wider text.
 func diffPadRight(s string, width int) string {
-	if pad := width - diffWidth(s); pad > 0 {
-		return s + strings.Repeat(" ", pad)
-	}
-	return s
+	return s + strings.Repeat(" ", max(0, width-diffWidth(s)))
 }
 
-// diffPadLeft pads s on the left with spaces to exactly width cells.
+// diffPadLeft pads to width cells without truncating wider text.
 func diffPadLeft(s string, width int) string {
-	if pad := width - diffWidth(s); pad > 0 {
-		return strings.Repeat(" ", pad) + s
-	}
-	return s
+	return strings.Repeat(" ", max(0, width-diffWidth(s))) + s
 }
 
-// diffEscape renders tabs, control characters, and invisible Unicode as
-// visible text. Tabs expand to 4-cell stops relative to the text start.
-// C0 (except tab), DEL, C1, and invalid UTF-8 bytes become \xNN; the listed
-// bidi controls and zero-width characters become \uNNNN; everything else,
-// including ZWJ sequences and variation selectors, is kept. Escape
-// sequences are wrapped in SGR reverse (reset with reverse-off so an outer
-// color survives), and the result reports whether any sequence was emitted.
-func diffEscape(s string) (string, bool) {
-	var b strings.Builder
+// An atom is a whole grapheme or a visible, reverse-highlighted escape. Keep
+// escapes atomic without reparsing SGR; reverse-off preserves outer colors.
+type diffAtom struct {
+	text  string
+	width int
+}
+
+// diffAtoms groups graphemes, marks controls, and expands tabs to cell stops.
+func diffAtoms(s string) []diffAtom {
+	var atoms []diffAtom
 	col := 0
-	escaped := false
 	for len(s) > 0 {
-		c := s[0]
-		if c == '\t' {
-			next := col + 4 - col%4
-			b.WriteString(strings.Repeat(" ", next-col))
-			col = next
-			s = s[1:]
-			continue
-		}
-		if c < utf8.RuneSelf {
-			if c < 0x20 || c == 0x7f {
-				b.WriteString(diffStyle(diffSGRReverse, fmt.Sprintf(`\x%02x`, c)))
-				col += 4
-				escaped = true
-			} else {
-				b.WriteByte(c)
+		r, size := utf8.DecodeRuneInString(s)
+		var escape string
+		switch {
+		case r == '\t':
+			for n := 4 - col%4; n > 0; n-- {
+				atoms = append(atoms, diffAtom{" ", 1})
 				col++
 			}
-			s = s[1:]
-			continue
-		}
-		r, size := utf8.DecodeRuneInString(s)
-		if r == utf8.RuneError && size <= 1 {
-			b.WriteString(diffStyle(diffSGRReverse, fmt.Sprintf(`\x%02x`, s[0])))
-			col += 4
-			escaped = true
-			s = s[1:]
-			continue
-		}
-		switch {
-		case r >= 0x80 && r <= 0x9f:
-			b.WriteString(diffStyle(diffSGRReverse, fmt.Sprintf(`\x%02x`, r)))
-			col += 4
-			escaped = true
+		case r == utf8.RuneError && size == 1:
+			escape = fmt.Sprintf(`\x%02x`, s[0])
+		case r < 0x20 || (r >= 0x7f && r <= 0x9f):
+			escape = fmt.Sprintf(`\x%02x`, r)
 		case diffEscapeU(r):
-			b.WriteString(diffStyle(diffSGRReverse, fmt.Sprintf(`\u%04x`, r)))
-			col += 6
-			escaped = true
+			escape = fmt.Sprintf(`\u%04x`, r)
 		default:
-			b.WriteString(s[:size])
-			col += diffWidth(s[:size])
+			cluster, w := ansi.FirstGraphemeCluster(s, ansi.GraphemeWidth)
+			size = len(cluster)
+			atoms = append(atoms, diffAtom{cluster, w})
+			col += w
+		}
+		if escape != "" {
+			atoms = append(atoms, diffAtom{"\x1b[7m" + escape + "\x1b[27m", len(escape)})
+			col += len(escape)
 		}
 		s = s[size:]
 	}
-	return b.String(), escaped
+	return atoms
 }
 
-// diffEscapeU reports whether r is a bidi control or zero-width character
-// that must render as a \uNNNN sequence.
+// diffEscapeU reports whether a bidi control or invisible rune needs a \u escape.
 func diffEscapeU(r rune) bool {
 	switch r {
 	case 0x061c, // ARABIC LETTER MARK
@@ -131,133 +99,42 @@ func diffEscapeU(r rune) bool {
 	return false
 }
 
-// diffAtom is one unbreakable wrapping unit: either a single grapheme
-// cluster or one whole \xNN / \uNNNN escape. Spaces are their own atoms so
-// the wrapper can prefer breaking after them.
-type diffAtom struct {
-	text  string // escaped, unstyled
-	style string // styled form of text
-	width int
-	space bool
+// diffWrapLine escapes raw text and wraps it, preserving every source space.
+func diffWrapLine(s string, width int) []string {
+	return diffWrapIndented(s, width, 0)
 }
 
-// diffEscapeSpans returns the byte ranges of the \xNN and \uNNNN sequences
-// open, so a styled sequence is found by its opener; a literal backslash in
-// the source text never carries one.
-func diffEscapeSpans(styled string) [][2]int {
-	const open = "\x1b[7m"
-	const close = "\x1b[27m"
-	var spans [][2]int
-	for i := 0; i+len(open) < len(styled); {
-		if !strings.HasPrefix(styled[i:], open) {
-			i++
-			continue
-		}
-		start := i + len(open)
-		end := strings.Index(styled[start:], close)
-		if end < 0 {
-			break
-		}
-		spans = append(spans, [2]int{start, start + end})
-		i = start + end + len(close)
+// diffWrapIndented reserves the continuation indent before packing each row.
+// A glyph or escape wider than the entire box still gets its own row.
+func diffWrapIndented(s string, width, indent int) []string {
+	atoms := diffAtoms(s)
+	if len(atoms) == 0 {
+		return []string{""}
 	}
-	return spans
-}
-
-// diffWrapLine wraps one styled escaped line to at most limit cells per
-// row. The break prefers the last space within the limit, kept at the end
-// of the row so the text round-trips; otherwise it breaks at an atom
-// boundary (one grapheme cluster, or one whole escape sequence). A limit
-// below 1 returns the line unchanged.
-func diffWrapLine(styled string, limit int) []string {
-	if limit < 1 {
-		return []string{styled}
-	}
-	plain := ansi.Strip(styled)
-	return diffWrapAtoms(diffAtomizeStyled(plain, styled, diffEscapeSpans(styled)), limit)
-}
-
-// diffAtomizeStyled pairs the plain text with its styled form. plain is the
-// SGR-stripped escaped line; styled carries the reverse spans at the same
-// byte positions only where diffEscape put them, so spans (byte ranges into
-// plain) locate each sequence and the styled bytes between spans are the
-// plain bytes verbatim.
-func diffAtomizeStyled(plain, styled string, spans [][2]int) []diffAtom {
-	var atoms []diffAtom
-	pos := 0
-	styledPos := 0
-	for _, span := range spans {
-		if span[0] > pos {
-			chunk := plain[pos:span[0]]
-			// The styled text between spans equals the plain text.
-			styledPos += len(chunk)
-			for len(chunk) > 0 {
-				cluster, w := ansi.FirstGraphemeCluster(chunk, ansi.GraphemeWidth)
-				atoms = append(atoms, diffAtom{text: cluster, style: cluster, width: w, space: cluster == " "})
-				chunk = chunk[len(cluster):]
-			}
-		}
-		seq := plain[span[0]:span[1]]
-		// Find the styled sequence: reverse-open + seq + reverse-off.
-		styledSeq := styled[styledPos : styledPos+len("\x1b[7m")+len(seq)+len("\x1b[27m")]
-		atoms = append(atoms, diffAtom{text: seq, style: styledSeq, width: len(seq), space: false})
-		styledPos += len(styledSeq)
-		pos = span[1]
-	}
-	if pos < len(plain) {
-		chunk := plain[pos:]
-		for len(chunk) > 0 {
-			cluster, w := ansi.FirstGraphemeCluster(chunk, ansi.GraphemeWidth)
-			atoms = append(atoms, diffAtom{text: cluster, style: cluster, width: w, space: cluster == " "})
-			chunk = chunk[len(cluster):]
-		}
-	}
-	return atoms
-}
-
-// diffWrapAtoms greedily packs atoms into rows of at most limit cells.
-func diffWrapAtoms(atoms []diffAtom, limit int) []string {
+	indent = min(indent, max(0, width-6)) // reserve space for an atomic \uNNNN
 	var out []string
-	var line []diffAtom
-	width := 0
-	spaceIdx := -1
-	emit := func(upto int) {
-		var sb strings.Builder
-		for _, a := range line[:upto] {
-			sb.WriteString(a.style)
-		}
-		out = append(out, sb.String())
-		rest := append([]diffAtom(nil), line[upto:]...)
-		line = rest
-		width = 0
-		spaceIdx = -1
-		for i, a := range line {
-			width += a.width
-			if a.space {
-				spaceIdx = i
+	prefix := 0
+	for len(atoms) > 0 {
+		end, space := 0, -1
+		used := prefix
+		for end < len(atoms) && (end == 0 || used+atoms[end].width <= width) {
+			if atoms[end].text == " " {
+				space = end
 			}
+			used += atoms[end].width
+			end++
 		}
-	}
-	for _, a := range atoms {
-		if width+a.width > limit && len(line) > 0 {
-			if spaceIdx >= 0 {
-				emit(spaceIdx + 1)
-			} else {
-				emit(len(line))
-			}
+		if end < len(atoms) && space >= 0 {
+			end = space + 1
 		}
-		// An atom wider than the limit still gets its own row.
-		line = append(line, a)
-		width += a.width
-		if a.space {
-			spaceIdx = len(line) - 1
+		var line strings.Builder
+		line.WriteString(strings.Repeat(" ", prefix))
+		for _, a := range atoms[:end] {
+			line.WriteString(a.text)
 		}
-	}
-	if len(line) > 0 {
-		emit(len(line))
-	}
-	if len(out) == 0 {
-		out = append(out, "")
+		out = append(out, line.String())
+		atoms = atoms[end:]
+		prefix = indent
 	}
 	return out
 }
