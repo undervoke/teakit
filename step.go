@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"os/signal"
+	"syscall"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -69,21 +72,48 @@ func (s *Step) Run(ctx context.Context, opts ...tea.ProgramOption) error {
 		m.quit = &q
 	}
 	if _, err := tea.NewProgram(m, append(opts, tea.WithContext(ctx))...).Run(); err != nil {
+		if interrupted(ctx) {
+			return ErrLeave
+		}
 		return err
 	}
 	return m.result
 }
 
 // AltScreen runs flow on the terminal's alternate screen, so the shell text
-// before it stays hidden until flow returns. The programs flow runs, such as
-// Step.Run, draw inline on that screen; give them out with tea.WithOutput.
-// Whatever flow prints there is gone when it returns.
-func AltScreen(out io.Writer, flow func() error) error {
+// before it stays hidden until flow returns, and returns what flow returns.
+// The programs flow runs, such as Step.Run, draw inline on that screen; give
+// them out with tea.WithOutput. Whatever flow prints there is gone when it
+// returns.
+//
+// Between programs ctrl+c arrives as a signal rather than a key. The first
+// interrupt or termination signal cancels flow's context with ErrLeave as its
+// cause, and a runner given that context returns as if ctrl+c was pressed on
+// its screen. A second signal is not caught here.
+func AltScreen(ctx context.Context, out io.Writer, flow func(context.Context) error) error {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	go func() {
+		select {
+		case <-signals:
+			signal.Stop(signals)
+			cancel(ErrLeave)
+		case <-ctx.Done():
+		}
+	}()
 	if _, err := io.WriteString(out, ansi.SetModeAltScreenSaveCursor+ansi.EraseEntireScreen+ansi.CursorHomePosition); err != nil {
 		return err
 	}
 	defer io.WriteString(out, ansi.ResetModeAltScreenSaveCursor)
-	return flow()
+	return flow(ctx)
+}
+
+// interrupted reports that ctx ended because AltScreen caught a signal.
+func interrupted(ctx context.Context) bool {
+	return ctx.Err() != nil && errors.Is(context.Cause(ctx), ErrLeave)
 }
 
 type stepModel struct {
@@ -245,6 +275,9 @@ func Wait[T any](ctx context.Context, view func(width int) string, work func(con
 	var zero T
 	if _, err := tea.NewProgram(m, opts...).Run(); err != nil {
 		return zero, err
+	}
+	if m.result.err != nil && interrupted(ctx) {
+		return zero, ErrLeave
 	}
 	return m.result.v, m.result.err
 }

@@ -168,6 +168,9 @@ func AskLeave(ctx context.Context, cfg LeaveConfig, opts ...tea.ProgramOption) (
 	s := &leaveStandalone{inner: NewLeave(cfg)}
 	_, err := tea.NewProgram(s, append(opts, tea.WithContext(ctx))...).Run()
 	if err != nil {
+		if interrupted(ctx) {
+			return Interrupt, nil
+		}
 		return Pending, err
 	}
 	return s.inner.Decision(), nil

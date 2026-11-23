@@ -38,6 +38,6 @@ A behavior becomes a tool-supplied setting only when two tools actually need it 
 | Esc during a wait | Cancel the wait; the tool decides what follows |
 | Backspace on a choice screen | Return to the previous screen; while typing text it edits the text |
 | Shift+Tab | Move to the previous field; on the first field, return to the previous screen |
-| Ctrl+C | Leave at once from any screen, including during a wait |
+| Ctrl+C | Leave at once from any screen, including during a wait and, on the alternate screen, between screens |
 
 The leave question starts on the option to stay, so Enter keeps the user where they were.

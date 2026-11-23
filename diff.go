@@ -884,6 +884,9 @@ func ReviewDiff(ctx context.Context, cfg DiffConfig, files []DiffFile, opts ...t
 	s := &diffStandalone{inner: NewDiff(cfg).WithFiles(files)}
 	_, err := tea.NewProgram(s, append(opts, tea.WithContext(ctx))...).Run()
 	if err != nil {
+		if interrupted(ctx) {
+			return DiffInterrupt, nil
+		}
 		return DiffPending, err
 	}
 	return s.inner.Decision(), nil

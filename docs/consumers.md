@@ -68,7 +68,9 @@ func (f huhForm) Done() bool    { return f.State != huh.StateNormal }
 func (f huhForm) AtFirst() bool { return f.GetFocusedField() == f.first }
 ```
 
-To hide the shell's earlier text while the wizard runs, wrap the flow in `teakit.AltScreen(os.Stderr, func() error { ... })` and give every program inside the same writer with `tea.WithOutput(os.Stderr)`. The programs still draw inline, on the alternate screen, and everything printed there is gone when the flow returns, including the diff a confirmed `ReviewDiff` leaves; print `teakit.RenderDiff(files, width)` after `AltScreen` returns to keep it. Ctrl+C outside a program kills the process and leaves the terminal on the alternate screen, so run the flow under a context from `signal.NotifyContext(ctx, os.Interrupt)`.
+To hide the shell's earlier text while the wizard runs, wrap the flow in `teakit.AltScreen(ctx, os.Stderr, func(ctx context.Context) error { ... })`, run every screen inside with the flow's `ctx`, and give each program the same writer with `tea.WithOutput(os.Stderr)`. The programs still draw inline, on the alternate screen, and everything printed there is gone when the flow returns, including the diff a confirmed `ReviewDiff` leaves; print `teakit.RenderDiff(files, width)` after `AltScreen` returns to keep it.
+
+Between screens, Ctrl+C arrives as a signal rather than a key. `AltScreen` catches it, and the next screen answers as if Ctrl+C was pressed on it: `ErrLeave` from `Step.Run` and `Wait`, `teakit.Interrupt` from `AskLeave`, and `teakit.DiffInterrupt` from `ReviewDiff`. Other work in the flow sees the context cancelled, with `teakit.ErrLeave` as its `context.Cause`. Only the first signal is caught, so a second Ctrl+C before the flow returns gets the process's default handling, which exits without leaving the alternate screen.
 
 A full-screen model can move its cursor with `teakit.Move`, so its options wrap like teakit lists.
 
