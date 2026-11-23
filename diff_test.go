@@ -1,6 +1,7 @@
 package teakit
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -276,6 +277,57 @@ func TestDiffViewHeight(t *testing.T) {
 	}
 }
 
+func diffLongTestFiles() []DiffFile {
+	files := diffTestFiles()
+	var ops []DiffOp
+	for n := 1; n <= 50; n++ {
+		ops = append(ops, DiffOp{Kind: OpInsert, Text: fmt.Sprintf("change %02d", n)})
+	}
+	files[0].Sections[0].Ops = ops
+	return files
+}
+
+func TestDiffBottomShowsLastPage(t *testing.T) {
+	for _, key := range []tea.KeyPressMsg{{Code: tea.KeyEnd}, {Code: 'G', Text: "G"}, {Code: ']', Text: "]"}} {
+		t.Run(key.String(), func(t *testing.T) {
+			m := NewDiff(DiffConfig{}).WithFiles(diffLongTestFiles()).SetSize(80, 12)
+			if key.Code == ']' {
+				m, _ = m.Update(key) // jump to the only section before jumping past it
+			}
+			m, _ = m.Update(key)
+			view := ansi.Strip(m.View())
+			if !strings.Contains(view, "change 43") || !strings.Contains(view, "change 50") {
+				t.Fatalf("last eight rows aren't visible:\n%s", view)
+			}
+		})
+	}
+}
+
+func TestDiffNoRowsCannotAnswer(t *testing.T) {
+	diffArmed(t, func() {
+		cfg := DiffConfig{AlternateKey: "c", Title: strings.Repeat("Title\n", 12)}
+		m := NewDiff(cfg).WithFiles(diffTestFiles()).SetSize(80, 12)
+		for _, key := range []tea.KeyPressMsg{{Code: tea.KeyEnter}, {Code: 'c', Text: "c"}} {
+			next, _ := m.Update(key)
+			if next.Decision() != DiffPending {
+				t.Errorf("%s answered a diff with no rows: %v", key, next.Decision())
+			}
+		}
+	})
+}
+
+func TestDiffPageDown(t *testing.T) {
+	m := NewDiff(DiffConfig{}).WithFiles(diffLongTestFiles()).SetSize(80, 12)
+	key := tea.KeyPressMsg{Code: tea.KeyPgDown}
+	if !strings.Contains(ansi.Strip(m.View()), key.String()) {
+		t.Errorf("hint omits %s", key)
+	}
+	m, _ = m.Update(key)
+	if view := ansi.Strip(m.View()); !strings.Contains(view, "change 12") {
+		t.Errorf("Page Down didn't scroll a page:\n%s", view)
+	}
+}
+
 // TestDiffLeaveCancel checks the embedded leave question: one Esc opens it,
 // the second Esc cancels, and Ctrl+C interrupts from inside it.
 func TestDiffLeaveCancel(t *testing.T) {
@@ -296,5 +348,50 @@ func TestDiffLeaveCancel(t *testing.T) {
 	m2, _ := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	if m2.Decision() != DiffInterrupt {
 		t.Fatalf("Ctrl+C in the leave question decided %v", m2.Decision())
+	}
+}
+
+func TestDiffLeaveQuestionVisible(t *testing.T) {
+	cfg := DiffConfig{Leave: &LeaveConfig{Title: "Leave this review?"}}
+	m := NewDiff(cfg).SetSize(80, 12)
+	longTitle := cfg
+	longTitle.Title = strings.Repeat("Title\n", 12)
+	for _, tc := range []struct {
+		name  string
+		model DiffModel
+	}{
+		{"loading", m},
+		{"incomplete", m.WithIncomplete("host failed")},
+		{"narrow", m.WithFiles(diffTestFiles()).SetSize(28, 12)},
+		{"crowded", NewDiff(longTitle).WithFiles(diffTestFiles()).SetSize(80, 12)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			esc := tea.KeyPressMsg{Code: tea.KeyEscape}
+			m, _ := tc.model.Update(esc)
+			if view := ansi.Strip(m.View()); !strings.Contains(view, cfg.Leave.Title) ||
+				!strings.Contains(view, "1. Stay") || !strings.Contains(view, "2. Leave") {
+				t.Errorf("leave question not drawn:\n%s", view)
+			}
+			m, _ = m.Update(esc)
+			if m.Decision() != DiffCancel {
+				t.Errorf("Esc did not answer the visible question: %v", m.Decision())
+			}
+		})
+	}
+}
+
+func TestDiffLeaveQuestionDoesNotFit(t *testing.T) {
+	esc := tea.KeyPressMsg{Code: tea.KeyEscape}
+	m := NewDiff(DiffConfig{Leave: &LeaveConfig{Title: "Leave?"}}).WithFiles(diffTestFiles()).SetSize(80, 1)
+	m, _ = m.Update(esc)
+	if next, _ := m.Update(esc); next.Decision() != DiffPending {
+		t.Errorf("Esc answered a question that couldn't fit: %v", next.Decision())
+	}
+	m = m.SetSize(80, 12)
+	if view := ansi.Strip(m.View()); !strings.Contains(view, "Leave?") {
+		t.Fatalf("leave question missing after resize:\n%s", view)
+	}
+	if next, _ := m.Update(esc); next.Decision() != DiffCancel {
+		t.Errorf("Esc didn't answer the question after resize: %v", next.Decision())
 	}
 }

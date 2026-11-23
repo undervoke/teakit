@@ -184,7 +184,8 @@ func (m DiffModel) SetSize(width, height int) DiffModel {
 		m.width = width
 		m.height = height
 		m.offset = 0
-		if rows := m.contentRows(m.effWidth()); len(rows) > 0 {
+		rows := m.contentRows(m.effWidth())
+		if len(rows) > 0 {
 			best := 0
 			for i, r := range rows {
 				if r.sec > sec || (r.sec == sec && (r.path != path || r.label != label)) {
@@ -198,12 +199,10 @@ func (m DiffModel) SetSize(width, height int) DiffModel {
 			}
 			m.offset = best
 		}
-		m = m.clampOffset()
-		return m
+		return m.clampOffset(rows)
 	}
 	m.height = height
-	m = m.clampOffset()
-	return m
+	return m.clampOffset(m.contentRows(m.effWidth()))
 }
 
 // diffRowSub counts the row's index within its section, so the resize anchor
@@ -271,8 +270,6 @@ func (m DiffModel) updateKey(key tea.KeyPressMsg) (DiffModel, tea.Cmd) {
 	var scrolled bool
 	m, scrolled = m.scrollKey(name)
 	if scrolled {
-		m.notice = ""
-		m = m.clampOffset()
 		return m, nil
 	}
 	switch name {
@@ -313,6 +310,9 @@ func (m DiffModel) updateLeave(key tea.KeyPressMsg) DiffModel {
 		m.leaveActive = false
 		return m
 	}
+	if m.leaveQuestion(m.effWidth()) == nil {
+		return m
+	}
 	next, _ := m.leave.Update(key)
 	m.leave = next
 	switch m.leave.Decision() {
@@ -338,42 +338,39 @@ func (m DiffModel) scrollKey(name string) (DiffModel, bool) {
 	switch name {
 	case "up", "k":
 		m.offset--
-		return m, true
 	case "down", "j":
 		m.offset++
-		return m, true
 	case "pgup":
 		m.offset -= page
-		return m, true
-	case "pgdn":
+	case "pgdown":
 		m.offset += page
-		return m, true
 	case "home", "g":
 		m.offset = 0
-		return m, true
 	case "end", "G":
 		m.offset = len(rows)
-		return m, true
 	case "]":
+		next := len(rows)
 		for i := m.offset + 1; i < len(rows); i++ {
 			if rows[i].secStart {
-				m.offset = i
-				return m, true
+				next = i
+				break
 			}
 		}
-		m.offset = len(rows)
-		return m, true
+		m.offset = next
 	case "[":
+		prev := 0
 		for i := m.offset - 1; i >= 0; i-- {
 			if rows[i].secStart {
-				m.offset = i
-				return m, true
+				prev = i
+				break
 			}
 		}
-		m.offset = 0
-		return m, true
+		m.offset = prev
+	default:
+		return m, false
 	}
-	return m, false
+	m.notice = ""
+	return m.clampOffset(rows), true
 }
 
 // cancel asks the configured leave question or cancels at once.
@@ -403,6 +400,12 @@ func (m DiffModel) answer(decision DiffDecision, key string) DiffModel {
 		m.notice = "The diff is not ready; nothing can be applied yet."
 		return m
 	}
+	w := m.effWidth()
+	rows := m.contentRows(w)
+	lay := m.clampOffset(rows).layout(rows, w, nil)
+	if !slices.ContainsFunc(lay.visible, func(r diffRow) bool { return r.sec >= 0 && r.text != "" }) {
+		return m
+	}
 	if m.cfg.Acknowledge != "" && !m.acked {
 		m.notice = "! Press y to accept: " + m.cfg.Acknowledge + ". " + key + " alone never confirms."
 		return m
@@ -422,6 +425,16 @@ func (m DiffModel) armed() bool {
 // height is set.
 func (m DiffModel) View() string {
 	w := m.effWidth()
+	var question []string
+	if m.leaveActive {
+		question = m.leaveQuestion(w)
+		if question == nil {
+			return m.fitHeight(diffWrapLine("Enlarge the terminal to show the leave question, or press ctrl+c.", w))
+		}
+		if m.tooSmall() || m.state != DiffReady {
+			return m.fitHeight(question)
+		}
+	}
 	if m.tooSmall() {
 		return m.fitHeight([]string{"Terminal too small to review; enlarge it or press esc."})
 	}
@@ -445,15 +458,17 @@ func (m DiffModel) View() string {
 	}
 	rows := m.contentRows(w)
 	total := len(rows)
-	m = m.clampOffset()
-	lay := m.layout(rows, w)
+	m = m.clampOffset(rows)
+	lay := m.layout(rows, w, question)
 	out = append(out, lay.pinned...)
 	for _, r := range lay.visible {
 		out = append(out, r.text)
 	}
 	out = append(out, lay.below...)
-	if !m.leaveActive {
+	if question == nil {
 		out = append(out, m.footerLines(w, rows, lay, total)...)
+	} else if m.height > 0 && len(out) > m.height {
+		return m.fitHeight(question)
 	}
 	return m.fitHeight(out)
 }
@@ -509,7 +524,7 @@ type diffViewLayout struct {
 }
 
 // layout computes the visible slice for the current offset and size.
-func (m DiffModel) layout(rows []diffRow, width int) diffViewLayout {
+func (m DiffModel) layout(rows []diffRow, width int, question []string) diffViewLayout {
 	top := m.offset
 	if top > len(rows) {
 		top = len(rows)
@@ -528,8 +543,8 @@ func (m DiffModel) layout(rows []diffRow, width int) diffViewLayout {
 		}
 	}
 	footer := 0
-	if m.leaveActive {
-		below = append(below, m.leaveLines(width)...)
+	if question != nil {
+		below = append(below, question...)
 	} else {
 		footer = 2 // status + hint
 	}
@@ -603,11 +618,11 @@ func (m DiffModel) pinnedContext(rows []diffRow, top, width int) []string {
 }
 
 // atTop lays out the view from the first row to measure a full page for
-// pgup/pgdn, independent of the current scroll position.
+// pgup/pgdown, independent of the current scroll position.
 func (m DiffModel) atTop(rows []diffRow) diffViewLayout {
 	top := m
 	top.offset = 0
-	return top.layout(rows, top.effWidth())
+	return top.layout(rows, top.effWidth(), nil)
 }
 
 // ackLine renders the pinned acknowledgement with its hint.
@@ -625,11 +640,15 @@ func (m DiffModel) ackLine(width int) string {
 	return diffStyle(diffSGRYellow+";"+diffSGRBold, left)
 }
 
-// leaveLines renders the embedded leave question for the footer area.
-func (m DiffModel) leaveLines(width int) []string {
+// leaveQuestion returns the entire prompt, or nil when it can't be shown.
+// View can give it the whole box; Update uses the same visibility check.
+func (m DiffModel) leaveQuestion(width int) []string {
 	var out []string
 	for _, line := range strings.Split(m.leave.View(), "\n") {
 		for _, wrapped := range diffWrapLine(mustEscapePlain(line), width) {
+			if diffWidth(wrapped) > width || (m.height > 0 && len(out) == m.height) {
+				return nil
+			}
 			out = append(out, wrapped)
 		}
 	}
@@ -664,7 +683,7 @@ func (m DiffModel) hintLine(width int) string {
 	if m.cfg.AlternateKey != "" {
 		answers = append(answers, strings.TrimSpace(m.cfg.AlternateKey+" "+m.cfg.AlternateLabel))
 	}
-	parts := append([]string{"↑/↓ k/j scroll", "pgup/pgdn page", "g/G top/bottom", "]/[ section"}, answers...)
+	parts := append([]string{"↑/↓ k/j scroll", "pgup/pgdown page", "g/G top/bottom", "]/[ section"}, answers...)
 	if m.cfg.Acknowledge != "" && m.acked {
 		parts = append(parts, "n undo")
 	}
@@ -679,7 +698,7 @@ func (m DiffModel) hintLine(width int) string {
 	if diffWidth(full) <= width {
 		return diffStyle(diffSGRFaint, full)
 	}
-	short := append(append([]string{"↑/↓ k/j scroll", "pgup/pgdn", "]/[ section"}, answers...), "esc cancel")
+	short := append(append([]string{"↑/↓ k/j scroll", "pgup/pgdown", "]/[ section"}, answers...), "esc cancel")
 	if m.cfg.Acknowledge != "" && !m.acked {
 		short = []string{"k/j scroll", "y accept", "esc cancel"}
 	}
@@ -711,14 +730,21 @@ func (m DiffModel) fitHeight(lines []string) string {
 	return strings.Join(lines, "\n")
 }
 
-// clampOffset keeps the scroll position inside the content.
-func (m DiffModel) clampOffset() DiffModel {
-	rows := len(m.contentRows(m.effWidth()))
-	if m.offset > rows {
-		m.offset = rows
+// clampOffset stops scrolling at the first page that includes the last row.
+func (m DiffModel) clampOffset(rows []diffRow) DiffModel {
+	m.offset = min(max(0, m.offset), max(0, len(rows)-1))
+	if m.offset == 0 {
+		return m
 	}
-	if m.offset < 0 {
-		m.offset = 0
+	// The unpinned top page gives an upper bound on how many rows can fit.
+	// Near the bottom, find the last page using each candidate's pinned context.
+	start := len(rows) - len(m.atTop(rows).visible)
+	for top := start; top < m.offset; top++ {
+		candidate := m
+		candidate.offset = top
+		if top+len(candidate.layout(rows, m.effWidth(), nil).visible) == len(rows) {
+			return candidate
+		}
 	}
 	return m
 }
