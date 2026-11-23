@@ -3,10 +3,7 @@ package teakit
 import (
 	"context"
 	"errors"
-	"io"
-	"os"
-	"os/signal"
-	"syscall"
+	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -34,8 +31,8 @@ type Form interface {
 }
 
 // Step is one screen of a flow: a List, a Form, or with neither, the leave
-// question alone. Run shows it as its own program, so leaving it by any key
-// erases its frame.
+// question alone. Run shows it as its own program, or under AltScreen as the
+// flow's current screen, and leaving it by any key erases it.
 //
 // While text is being typed, in a text form or in a list's field, backspace
 // edits it and esc goes back. On a choice screen backspace goes back and esc
@@ -72,7 +69,7 @@ func (s *Step) Run(ctx context.Context, opts ...tea.ProgramOption) error {
 		q := NewLeave(s.Leave)
 		m.quit = &q
 	}
-	if _, err := tea.NewProgram(m, append(opts, tea.WithContext(ctx))...).Run(); err != nil {
+	if err := show(ctx, m, opts); err != nil {
 		if interrupted(ctx) {
 			return ErrLeave
 		}
@@ -84,49 +81,15 @@ func (s *Step) Run(ctx context.Context, opts ...tea.ProgramOption) error {
 	return m.result
 }
 
-// AltScreen runs flow on the terminal's alternate screen, so the shell text
-// before it stays hidden until flow returns, and returns what flow returns.
-// The programs flow runs, such as Step.Run, draw inline on that screen; give
-// them out with tea.WithOutput. Whatever flow prints there is gone when it
-// returns.
-//
-// Between programs ctrl+c arrives as a signal rather than a key. The first
-// interrupt or termination signal cancels flow's context with ErrLeave as its
-// cause, and a runner given that context returns as if ctrl+c was pressed on
-// its screen. A second signal is not caught here.
-func AltScreen(ctx context.Context, out io.Writer, flow func(context.Context) error) error {
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(signals)
-	ctx, cancel := context.WithCancelCause(ctx)
-	defer cancel(nil)
-	go func() {
-		select {
-		case <-signals:
-			signal.Stop(signals)
-			cancel(ErrLeave)
-		case <-ctx.Done():
-		}
-	}()
-	if _, err := io.WriteString(out, ansi.SetModeAltScreenSaveCursor+ansi.EraseEntireScreen+ansi.CursorHomePosition); err != nil {
-		return err
-	}
-	defer io.WriteString(out, ansi.ResetModeAltScreenSaveCursor)
-	return flow(ctx)
-}
-
-// interrupted reports that ctx ended because AltScreen caught a signal.
-func interrupted(ctx context.Context) bool {
-	return ctx.Err() != nil && errors.Is(context.Cause(ctx), ErrLeave)
-}
-
 type stepModel struct {
 	s *Step
-	// quit is the leave question while it is up.
-	quit   *LeaveModel
-	width  int
-	result error
-	done   bool
+	// quit is the leave question while it is up, and held what arrived for
+	// the screen under it meanwhile.
+	quit          *LeaveModel
+	held          []tea.Msg
+	width, height int
+	result        error
+	done          bool
 }
 
 func (m *stepModel) Init() tea.Cmd {
@@ -136,19 +99,21 @@ func (m *stepModel) Init() tea.Cmd {
 	return m.s.Form.Init()
 }
 
-func (m *stepModel) end(result error) (tea.Model, tea.Cmd) {
+func (m *stepModel) Done() bool { return m.done }
+
+func (m *stepModel) end(result error) tea.Cmd {
 	m.result, m.done = result, true
-	return m, tea.Quit
+	return nil
 }
 
-func (m *stepModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *stepModel) Update(msg tea.Msg) tea.Cmd {
 	if m.done {
-		return m, nil
+		return nil
 	}
 	s := m.s
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
+		m.width, m.height = msg.Width, msg.Height
 	case tea.KeyPressMsg:
 		key := msg.String()
 		typing := s.List != nil && s.List.typing()
@@ -157,6 +122,9 @@ func (m *stepModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key == "ctrl+c":
 			return m.end(ErrLeave)
 		case m.quit != nil:
+			if _, shown := leaveView(s.Leave, m.quit.Cursor(), screenWidth(m.width), m.height); !shown {
+				return nil
+			}
 			next, _ := m.quit.Update(msg)
 			*m.quit = next
 			switch next.Decision() {
@@ -165,10 +133,11 @@ func (m *stepModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if s.List == nil && s.Form == nil {
 					return m.end(nil)
 				}
+				return m.replay()
 			case Leave, Interrupt:
 				return m.end(ErrLeave)
 			}
-			return m, nil
+			return nil
 		case key == "esc" && editing && s.Back,
 			key == "backspace" && s.Back && !editing,
 			key == "shift+tab" && s.Back && (!s.Text || s.Form.AtFirst()):
@@ -176,7 +145,7 @@ func (m *stepModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key == "esc" && s.Unsaved:
 			q := NewLeave(s.Leave)
 			m.quit = &q
-			return m, nil
+			return nil
 		case key == "esc":
 			return m.end(ErrLeave)
 		case typing:
@@ -184,38 +153,51 @@ func (m *stepModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if accepted {
 				return m.end(nil)
 			}
-			return m, cmd
+			return cmd
 		case s.List != nil:
 			picked := s.List.press(key)
 			s.List.focusField()
 			if picked {
 				return m.end(nil)
 			}
-			return m, nil
+			return nil
 		}
-	case tea.PasteMsg:
-		if s.List != nil && s.List.typing() {
-			return m, s.List.Field.edit(msg)
+	default:
+		if m.quit != nil {
+			// The leave question owns the input, so the screen under it
+			// neither changes nor ends until the user stays.
+			switch msg.(type) {
+			case tea.PasteMsg, tea.KeyReleaseMsg:
+			default:
+				m.held = append(m.held, msg)
+			}
+			return nil
 		}
 	}
+	if s.List != nil {
+		// The field's own messages, such as the text ctrl+v reads from the
+		// clipboard, go back to it.
+		if _, size := msg.(tea.WindowSizeMsg); !size && s.List.typing() && m.quit == nil {
+			return s.List.Field.edit(msg)
+		}
+		return nil
+	}
 	if s.Form == nil {
-		return m, nil
+		return nil
 	}
 	cmd := s.Form.Update(msg)
 	if s.Form.Done() {
 		return m.end(nil)
 	}
-	return m, cmd
+	return cmd
 }
 
-func (m *stepModel) View() tea.View {
-	if m.done {
-		return tea.NewView("")
-	}
+func (m *stepModel) View() string {
 	width := screenWidth(m.width)
 	s := m.s
 	if m.quit != nil {
-		return tea.NewView(leaveList(s.Leave, m.quit.Cursor()).view(width))
+		view, _ := leaveView(s.Leave, m.quit.Cursor(), width, m.height)
+		return view
 	}
 	var view string
 	if s.List != nil {
@@ -229,7 +211,47 @@ func (m *stepModel) View() tea.View {
 	if s.Head != nil {
 		view = s.Head(width) + "\n\n" + view
 	}
-	return tea.NewView(view)
+	return view
+}
+
+// replay gives the screen what arrived for it under the leave question.
+func (m *stepModel) replay() tea.Cmd {
+	held := m.held
+	m.held = nil
+	var cmds []tea.Cmd
+	for _, msg := range held {
+		if m.done {
+			break
+		}
+		cmds = append(cmds, m.Update(msg))
+	}
+	return tea.Batch(cmds...)
+}
+
+// leaveView draws the leave question like the screens around it, in at
+// most height rows once the height is known. A short terminal loses the
+// text above the options first, then the hint below them. When even the
+// options do not fit, it asks to enlarge the terminal instead and reports
+// that the question is not shown, so it must not be answered.
+func leaveView(cfg LeaveConfig, cursor, width, height int) (string, bool) {
+	l := leaveList(cfg, cursor)
+	view := l.view(width)
+	lines := strings.Split(view, "\n")
+	if height <= 0 || len(lines) <= height {
+		return view, true
+	}
+	// Above the options are the title, the body and a blank row; below
+	// them a blank row and the hint.
+	from := len(strings.Split(bold.Render(Wrap(l.Title, width)), "\n")) + 1
+	if l.Body != nil {
+		from += len(strings.Split(l.Body(width), "\n"))
+	}
+	to := len(lines) - 1 - len(strings.Split(dim.Render(Wrap(l.Hint, width)), "\n"))
+	if to-from > height {
+		return ansi.Truncate("Ctrl+C exits. Enlarge to answer.", width, "…"), false
+	}
+	start := min(len(lines)-height, from)
+	return strings.Join(lines[start:start+height], "\n"), true
 }
 
 // screenWidth keeps the text column readable on a wide terminal; before the
@@ -260,25 +282,28 @@ func leaveList(cfg LeaveConfig, cursor int) *List {
 // cancels work's context and returns context.Canceled; ctrl+c, or the
 // program ending before work does, as on a termination signal, returns
 // ErrLeave at once. When ctx ends first, Wait returns its error without
-// waiting for work, which should stop on its context.
+// waiting for work, which should stop on its context. A panic in work ends
+// the program as any Bubble Tea command's would, and Wait returns its error.
 func Wait[T any](ctx context.Context, view func(width int) string, work func(context.Context) (T, error), opts ...tea.ProgramOption) (T, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	results := make(chan waitResult[T], 1)
-	go func() {
+	m := &waitModel[T]{view: view}
+	m.work = func() tea.Msg {
 		v, err := work(ctx)
-		results <- waitResult[T]{v, err}
-	}()
-	m := &waitModel[T]{view: view, wait: func() tea.Msg {
-		select {
-		case r := <-results:
-			return r
-		case <-ctx.Done():
-			return waitResult[T]{err: ctx.Err()}
-		}
-	}}
+		return waitResult[T]{m, v, err}
+	}
+	m.stop = func() tea.Msg {
+		<-ctx.Done()
+		return waitResult[T]{from: m, err: ctx.Err()}
+	}
 	var zero T
-	if _, err := tea.NewProgram(m, opts...).Run(); err != nil {
+	if err := show(ctx, m, opts); err != nil {
+		switch {
+		case interrupted(ctx):
+			return zero, ErrLeave
+		case ctx.Err() != nil && errors.Is(err, ctx.Err()):
+			return zero, ctx.Err()
+		}
 		return zero, err
 	}
 	if !m.done {
@@ -290,33 +315,41 @@ func Wait[T any](ctx context.Context, view func(width int) string, work func(con
 	return m.result.v, m.result.err
 }
 
+// waitResult ends the wait that from shows; under AltScreen a later screen
+// can receive one from an earlier wait.
 type waitResult[T any] struct {
-	v   T
-	err error
+	from *waitModel[T]
+	v    T
+	err  error
 }
 
 type waitModel[T any] struct {
-	view   func(width int) string
-	wait   tea.Cmd
-	width  int
-	result waitResult[T]
-	done   bool
+	view func(width int) string
+	// work runs work, and stop ends the wait when its context does.
+	work, stop tea.Cmd
+	width      int
+	result     waitResult[T]
+	done       bool
 }
 
-func (m *waitModel[T]) Init() tea.Cmd { return m.wait }
+func (m *waitModel[T]) Init() tea.Cmd { return tea.Batch(m.work, m.stop) }
 
-func (m *waitModel[T]) end(r waitResult[T]) (tea.Model, tea.Cmd) {
+func (m *waitModel[T]) Done() bool { return m.done }
+
+func (m *waitModel[T]) end(r waitResult[T]) tea.Cmd {
 	m.result, m.done = r, true
-	return m, tea.Quit
+	return nil
 }
 
-func (m *waitModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *waitModel[T]) Update(msg tea.Msg) tea.Cmd {
 	if m.done {
-		return m, nil
+		return nil
 	}
 	switch msg := msg.(type) {
 	case waitResult[T]:
-		return m.end(msg)
+		if msg.from == m {
+			return m.end(msg)
+		}
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 	case tea.KeyPressMsg:
@@ -327,12 +360,7 @@ func (m *waitModel[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.end(waitResult[T]{err: context.Canceled})
 		}
 	}
-	return m, nil
+	return nil
 }
 
-func (m *waitModel[T]) View() tea.View {
-	if m.done {
-		return tea.NewView("")
-	}
-	return tea.NewView(m.view(screenWidth(m.width)))
-}
+func (m *waitModel[T]) View() string { return m.view(screenWidth(m.width)) }

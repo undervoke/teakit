@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 var (
@@ -77,6 +78,9 @@ func (l *List) typeKey(m tea.KeyPressMsg) (bool, tea.Cmd) {
 func (l *List) press(key string) bool {
 	typed := l.typed
 	l.typed = ""
+	if len(l.Options) == 0 {
+		return false
+	}
 	switch key {
 	case "up", "k":
 		l.Cursor = Move(l.Cursor, -1, len(l.Options))
@@ -162,10 +166,13 @@ func Wrap(text string, width int) string {
 			if row != indent && lipgloss.Width(row+" "+word) > width {
 				out, row = append(out, row), indent
 			}
-			for room := width - len(indent); room > 0 && lipgloss.Width(word) > room; {
-				r := []rune(word)
-				n := min(room, len(r))
-				out, word = append(out, indent+string(r[:n])), string(r[n:])
+			if room := width - len(indent); room > 0 && lipgloss.Width(word) > room {
+				// Hardwrap only inserts line breaks, by cells, past escapes.
+				pieces := strings.Split(ansi.Hardwrap(word, room, true), "\n")
+				for _, piece := range pieces[:len(pieces)-1] {
+					out = append(out, indent+piece)
+				}
+				word = pieces[len(pieces)-1]
 			}
 			if row != indent {
 				row += " "

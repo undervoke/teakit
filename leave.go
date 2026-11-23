@@ -138,43 +138,52 @@ func (m LeaveModel) Cursor() int { return m.cursor }
 // Decision reports the answer, or Pending while unanswered.
 func (m LeaveModel) Decision() Decision { return m.decision }
 
-// leaveStandalone adapts the submodel to a tea.Model for one-shot runs.
-// Answered views render empty so only this inline frame clears on quit.
-type leaveStandalone struct {
-	inner LeaveModel
+// leaveScreen shows the question for AskLeave like a Step without List or
+// Form.
+type leaveScreen struct {
+	inner         LeaveModel
+	width, height int
 }
 
-func (s *leaveStandalone) Init() tea.Cmd { return s.inner.Init() }
+func (s *leaveScreen) Init() tea.Cmd { return s.inner.Init() }
 
-func (s *leaveStandalone) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (s *leaveScreen) Update(msg tea.Msg) tea.Cmd {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		s.width, s.height = msg.Width, msg.Height
+	case tea.KeyPressMsg:
+		if _, shown := s.view(); !shown && msg.String() != "ctrl+c" {
+			return nil
+		}
+	}
 	next, cmd := s.inner.Update(msg)
 	s.inner = next
-	if s.inner.Decision() != Pending {
-		return s, tea.Quit
-	}
-	return s, cmd
+	return cmd
 }
 
-func (s *leaveStandalone) View() tea.View {
-	if s.inner.Decision() != Pending {
-		return tea.NewView("")
-	}
-	return tea.NewView(s.inner.View())
+func (s *leaveScreen) View() string {
+	view, _ := s.view()
+	return view
 }
 
-// AskLeave runs the question as its own inline program and returns the
-// decision. A program that ends without an answer, as on a termination
-// signal, returns Interrupt.
+func (s *leaveScreen) view() (string, bool) {
+	return leaveView(s.inner.cfg, s.inner.Cursor(), screenWidth(s.width), s.height)
+}
+
+func (s *leaveScreen) Done() bool { return s.inner.Decision() != Pending }
+
+// AskLeave runs the question as its own inline program, or under AltScreen
+// as the flow's current screen, and returns the decision. A program that
+// ends without an answer, as on a termination signal, returns Interrupt.
 func AskLeave(ctx context.Context, cfg LeaveConfig, opts ...tea.ProgramOption) (Decision, error) {
-	s := &leaveStandalone{inner: NewLeave(cfg)}
-	_, err := tea.NewProgram(s, append(opts, tea.WithContext(ctx))...).Run()
-	if err != nil {
+	s := &leaveScreen{inner: NewLeave(cfg)}
+	if err := show(ctx, s, opts); err != nil {
 		if interrupted(ctx) {
 			return Interrupt, nil
 		}
 		return Pending, err
 	}
-	if s.inner.Decision() == Pending {
+	if !s.Done() {
 		return Interrupt, nil
 	}
 	return s.inner.Decision(), nil

@@ -46,6 +46,14 @@ func TestRunnersTreatTerminationAsCtrlC(t *testing.T) {
 			d, _ := ReviewDiff(context.Background(), DiffConfig{}, nil, opts...)
 			return d, DiffInterrupt
 		}},
+		{"AltScreen", func(opts []tea.ProgramOption) (any, any) {
+			var err error
+			AltScreen(context.Background(), io.Discard, func(ctx context.Context) error {
+				err = (&Step{List: &List{Title: "Pick", Options: []string{"a", "b"}}}).Run(ctx)
+				return nil
+			}, opts...)
+			return err, ErrLeave
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

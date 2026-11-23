@@ -70,8 +70,12 @@ func (f *Field) fit() {
 	f.input.SetCursor(f.input.Position())
 }
 
-// check runs accept on the text and keeps why it was rejected.
+// check runs accept on the text and keeps why it was rejected. Without
+// accept, any text is taken.
 func (f *Field) check() bool {
+	if f.accept == nil {
+		return true
+	}
 	if err := f.accept(f.Value()); err != nil {
 		f.invalid = err.Error()
 		return false
@@ -79,12 +83,16 @@ func (f *Field) check() bool {
 	return true
 }
 
-// edit passes msg to the input.
+// edit passes msg to the input. A key or a change to the text clears why
+// the text was rejected.
 func (f *Field) edit(msg tea.Msg) tea.Cmd {
+	before := f.input.Value()
 	var cmd tea.Cmd
 	f.input, cmd = f.input.Update(msg)
 	f.fit()
-	f.invalid = ""
+	if _, key := msg.(tea.KeyPressMsg); key || f.input.Value() != before {
+		f.invalid = ""
+	}
 	return cmd
 }
 
