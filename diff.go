@@ -1,7 +1,8 @@
 // Package teakit provides shared Bubble Tea components with one set of key
 // conventions for terminal tools. This file adds the side-by-side override
 // diff view: a consent screen that shows what applying an update would
-// change, and answers only Enter on a complete, visible, armed diff.
+// change, and answers Enter, or the host's alternate key, only on a
+// complete, visible, armed diff.
 package teakit
 
 import (
@@ -69,12 +70,14 @@ const (
 	DiffBack
 	DiffCancel
 	DiffInterrupt
+	// DiffAlternate answers the host's AlternateKey.
+	DiffAlternate
 )
 
 // DiffConfig supplies the diff view's wording and behavior. Teakit fixes the
 // layout, styles, and key meanings; the host supplies the text and decides
-// when cancelling asks first, when Back exists, and whether an extra
-// acknowledgement gates Enter.
+// whether a second answer sits beside Enter, when cancelling asks first,
+// when Back exists, and whether an extra acknowledgement gates the answers.
 type DiffConfig struct {
 	// Title is pinned above the diff; empty when the host draws its own.
 	Title string
@@ -82,6 +85,11 @@ type DiffConfig struct {
 	Body string
 	// ApplyLabel is Enter's hint verb; it defaults to "apply".
 	ApplyLabel string
+	// AlternateKey, when set, is an exact tea.Key name that answers
+	// DiffAlternate under the same guards as Enter; built-in bindings win
+	// over it. AlternateLabel is its hint verb.
+	AlternateKey   string
+	AlternateLabel string
 	// CancelKeys holds exact tea.Key names that cancel like Esc (e.g. "q");
 	// built-in bindings win over these names.
 	CancelKeys []string
@@ -91,14 +99,14 @@ type DiffConfig struct {
 	// cancelling at once.
 	Leave *LeaveConfig
 	// Acknowledge, when set, pins "[ ] <text>" above the footer and makes
-	// Enter inert until y arms it.
+	// Enter and AlternateKey inert until y arms it.
 	Acknowledge string
 }
 
-// diffSettleDelay is the quiet period after the first Ready frame before y
-// and Enter act. Without it, an Enter typed ahead during the spinner, or a
-// double-press on the wizard's Apply button, could confirm a diff nobody
-// saw.
+// diffSettleDelay is the quiet period after the first Ready frame before y,
+// Enter, and AlternateKey act. Without it, an Enter typed ahead during the
+// spinner, or a double-press on the wizard's Apply button, could confirm a
+// diff nobody saw.
 var diffSettleDelay = 300 * time.Millisecond
 
 // DiffModel is an embeddable diff question. It never quits the program;
@@ -221,8 +229,8 @@ func (m DiffModel) Init() tea.Cmd { return nil }
 
 // Update routes keys to the diff or to its embedded leave question. Enter
 // confirms only on a complete, visible, armed diff with the acknowledgement
-// (when configured) armed by y. Paste messages are ignored so pasted text
-// can never consent.
+// (when configured) armed by y; AlternateKey answers under the same
+// conditions. Paste messages are ignored so pasted text can never consent.
 func (m DiffModel) Update(msg tea.Msg) (DiffModel, tea.Cmd) {
 	if m.decision != DiffPending {
 		return m, nil
@@ -259,7 +267,7 @@ func (m DiffModel) updateKey(key tea.KeyPressMsg) (DiffModel, tea.Cmd) {
 		if key.Key().IsRepeat {
 			return m, nil
 		}
-		return m.confirm(), nil
+		return m.answer(DiffConfirm, "Enter"), nil
 	}
 	var scrolled bool
 	m, scrolled = m.scrollKey(name)
@@ -284,6 +292,12 @@ func (m DiffModel) updateKey(key tea.KeyPressMsg) (DiffModel, tea.Cmd) {
 			m.acked = false
 		}
 		return m, nil
+	}
+	if m.cfg.AlternateKey != "" && name == m.cfg.AlternateKey {
+		if key.Key().IsRepeat {
+			return m, nil
+		}
+		return m.answer(DiffAlternate, name), nil
 	}
 	if slices.Contains(m.cfg.CancelKeys, name) {
 		return m.cancel(), nil
@@ -374,9 +388,10 @@ func (m DiffModel) cancel() DiffModel {
 	return m
 }
 
-// confirm answers Enter on a Ready diff. Anything else sets a refusal
-// notice and leaves the decision pending.
-func (m DiffModel) confirm() DiffModel {
+// answer gives decision on a Ready diff; key names the pressed key in the
+// acknowledgement notice. Anything else sets a refusal notice and leaves the
+// decision pending.
+func (m DiffModel) answer(decision DiffDecision, key string) DiffModel {
 	if m.state != DiffReady {
 		m.notice = "The diff is not ready; nothing can be applied yet."
 		return m
@@ -390,10 +405,10 @@ func (m DiffModel) confirm() DiffModel {
 		return m
 	}
 	if m.cfg.Acknowledge != "" && !m.acked {
-		m.notice = "! Press y to accept: " + m.cfg.Acknowledge + ". Enter alone never confirms."
+		m.notice = "! Press y to accept: " + m.cfg.Acknowledge + ". " + key + " alone never confirms."
 		return m
 	}
-	m.decision = DiffConfirm
+	m.decision = decision
 	return m
 }
 
@@ -643,37 +658,40 @@ func (m DiffModel) footerLines(width int, rows []diffRow, lay diffViewLayout, to
 	return []string{diffStyle(diffSGRFaint, status), m.hintLine(width)}
 }
 
-// hintLine picks the longest hint that fits the width. The enter, esc, and
+// hintLine picks the longest hint that fits the width. The answer, esc, and
 // scroll hints survive longest.
 func (m DiffModel) hintLine(width int) string {
-	enter := "enter " + m.cfg.ApplyLabel
-	parts := []string{"↑/↓ k/j scroll", "pgup/pgdn page", "g/G top/bottom", "]/[ section", enter, "esc cancel", "ctrl+c exit"}
-	if m.cfg.Back {
-		parts = append(parts[:5], append([]string{"backspace back"}, parts[5:]...)...)
+	answers := []string{"enter " + m.cfg.ApplyLabel}
+	if m.cfg.AlternateKey != "" {
+		answers = append(answers, strings.TrimSpace(m.cfg.AlternateKey+" "+m.cfg.AlternateLabel))
 	}
-	if m.cfg.Acknowledge != "" {
-		if m.acked {
-			parts = append(parts[:5], append([]string{"n undo"}, parts[5:]...)...)
-		} else {
-			parts = []string{"↑/↓ k/j scroll", "y accept", "esc cancel", "ctrl+c exit"}
-		}
+	parts := append([]string{"↑/↓ k/j scroll", "pgup/pgdn page", "g/G top/bottom", "]/[ section"}, answers...)
+	if m.cfg.Acknowledge != "" && m.acked {
+		parts = append(parts, "n undo")
+	}
+	if m.cfg.Back {
+		parts = append(parts, "backspace back")
+	}
+	parts = append(parts, "esc cancel", "ctrl+c exit")
+	if m.cfg.Acknowledge != "" && !m.acked {
+		parts = []string{"↑/↓ k/j scroll", "y accept", "esc cancel", "ctrl+c exit"}
 	}
 	full := strings.Join(parts, " · ")
 	if diffWidth(full) <= width {
 		return diffStyle(diffSGRFaint, full)
 	}
-	short := []string{"↑/↓ k/j scroll", "pgup/pgdn", "]/[ section", enter, "esc cancel"}
+	short := append(append([]string{"↑/↓ k/j scroll", "pgup/pgdn", "]/[ section"}, answers...), "esc cancel")
 	if m.cfg.Acknowledge != "" && !m.acked {
 		short = []string{"k/j scroll", "y accept", "esc cancel"}
 	}
 	if s := strings.Join(short, " · "); diffWidth(s) <= width {
 		return diffStyle(diffSGRFaint, s)
 	}
-	mini := []string{"k/j scroll", enter, "esc"}
+	mini := append(append([]string{"k/j scroll"}, answers...), "esc")
 	if s := strings.Join(mini, " · "); diffWidth(s) <= width {
 		return diffStyle(diffSGRFaint, s)
 	}
-	last := enter + " · esc"
+	last := strings.Join(answers, " · ") + " · esc"
 	if diffWidth(last) <= width {
 		return diffStyle(diffSGRFaint, last)
 	}
@@ -878,8 +896,8 @@ func (s *diffStandalone) View() tea.View {
 
 // ReviewDiff runs the diff question as its own inline program and returns
 // the decision. On confirm the whole static diff stays in the scrollback;
-// on back, cancel, or interrupt the frame clears and the host prints the
-// outcome, e.g. "Cancelled; nothing was changed."
+// on any other answer the frame clears and the host prints the outcome, e.g.
+// "Cancelled; nothing was changed."
 func ReviewDiff(ctx context.Context, cfg DiffConfig, files []DiffFile, opts ...tea.ProgramOption) (DiffDecision, error) {
 	s := &diffStandalone{inner: NewDiff(cfg).WithFiles(files)}
 	_, err := tea.NewProgram(s, append(opts, tea.WithContext(ctx))...).Run()

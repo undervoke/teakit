@@ -59,29 +59,43 @@ func diffArmed(t *testing.T, fn func()) {
 	fn()
 }
 
-// TestDiffEnterGuards is the consent test: Enter must stay Pending unless
-// the diff is Ready, armed, fitting, and acknowledged. Each row names a
-// bypass that would apply someone else's decision.
-func TestDiffEnterGuards(t *testing.T) {
-	enter := tea.KeyPressMsg{Code: rune(tea.KeyEnter)}
+// TestDiffAnswerGuards is the consent test: Enter and the alternate key
+// must stay Pending unless the diff is Ready, armed, fitting, and
+// acknowledged. Each row names a bypass that would apply someone else's
+// decision.
+func TestDiffAnswerGuards(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		key  tea.KeyPressMsg
+		want DiffDecision
+	}{
+		{"Enter", tea.KeyPressMsg{Code: rune(tea.KeyEnter)}, DiffConfirm},
+		{"Alternate", tea.KeyPressMsg{Code: 'c', Text: "c"}, DiffAlternate},
+	} {
+		t.Run(tc.name, func(t *testing.T) { diffAnswerGuards(t, tc.key, tc.want) })
+	}
+}
+
+func diffAnswerGuards(t *testing.T, enter tea.KeyPressMsg, want DiffDecision) {
 	files := diffTestFiles()
-	ack := DiffConfig{Acknowledge: "Discard the data"}
+	plain := DiffConfig{AlternateKey: "c"}
+	ack := DiffConfig{AlternateKey: "c", Acknowledge: "Discard the data"}
 	t.Run("Loading", func(t *testing.T) {
-		m := NewDiff(DiffConfig{})
+		m := NewDiff(plain)
 		next, _ := m.Update(enter)
 		if next.Decision() != DiffPending {
 			t.Fatalf("Enter on Loading decided %v", next.Decision())
 		}
 	})
 	t.Run("Incomplete", func(t *testing.T) {
-		m := NewDiff(DiffConfig{}).WithIncomplete("host failed")
+		m := NewDiff(plain).WithIncomplete("host failed")
 		next, _ := m.Update(enter)
 		if next.Decision() != DiffPending {
 			t.Fatalf("Enter on Incomplete decided %v", next.Decision())
 		}
 	})
 	t.Run("Contradiction", func(t *testing.T) {
-		m := NewDiff(DiffConfig{}).WithFiles([]DiffFile{{
+		m := NewDiff(plain).WithFiles([]DiffFile{{
 			Path: "f",
 			Sections: []DiffSection{{
 				Label:       "/a",
@@ -98,7 +112,7 @@ func TestDiffEnterGuards(t *testing.T) {
 		}
 	})
 	t.Run("Settle", func(t *testing.T) {
-		m := NewDiff(DiffConfig{}).WithFiles(files)
+		m := NewDiff(plain).WithFiles(files)
 		next, _ := m.Update(enter)
 		if next.Decision() != DiffPending {
 			t.Fatalf("Enter before the settle delay decided %v", next.Decision())
@@ -125,7 +139,9 @@ func TestDiffEnterGuards(t *testing.T) {
 		diffArmed(t, func() {
 			m := NewDiff(ack).WithFiles(files)
 			m = diffPress(m, "y")
-			rep, _ := m.Update(tea.KeyPressMsg{Code: rune(tea.KeyEnter), IsRepeat: true})
+			repeat := enter
+			repeat.IsRepeat = true
+			rep, _ := m.Update(repeat)
 			if rep.Decision() != DiffPending {
 				t.Fatalf("repeat Enter decided %v", rep.Decision())
 			}
@@ -147,7 +163,7 @@ func TestDiffEnterGuards(t *testing.T) {
 		diffArmed(t, func() {
 			m := NewDiff(ack).WithFiles(files)
 			m = diffPress(m, "y")
-			if next, _ := m.Update(enter); next.Decision() != DiffConfirm {
+			if next, _ := m.Update(enter); next.Decision() != want {
 				t.Fatalf("armed acknowledged Enter decided %v", next.Decision())
 			}
 		})

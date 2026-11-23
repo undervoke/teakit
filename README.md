@@ -14,7 +14,7 @@ teakit fixes what must behave the same in every tool, and each tool supplies wha
 |---|---|
 | The key meanings below | Keys it adds to cancel, such as `q`, and keys of its own |
 | The leave question's answers, highlighted option, and default view | When to ask (always, or only with unsaved changes), the question's wording, and its layout, styles, and key hints in the tool |
-| The diff view's layout, key meanings, and confirmation guards | The diff's content and wording, when cancelling asks first, whether Back exists, and whether an extra acknowledgement gates Enter |
+| The diff view's layout, key meanings, and confirmation guards | The diff's content and wording, whether a second answer sits beside Enter and on which key, when cancelling asks first, whether Back exists, and whether an extra acknowledgement gates the answers |
 | The static scrollback render left after a confirmed inline diff | Whether the host prints its own summary on top of it |
 | Numbered lists, cancellable waits, and text wrapping | What its screens show |
 | A list's typed field: sized to its text, with the unit as a fixed suffix, and without a unit the user types after the number | The unit, the placeholder, validation, and the form in which it stores the value |
@@ -34,7 +34,8 @@ A behavior becomes a tool-supplied setting only when two tools actually need it 
 | Esc while typing text, in a text form or a list's typed field | Return to the previous screen; with none, leave as on a choice screen |
 | Esc on the leave question | Confirm leaving immediately |
 | Esc in the diff view | Cancel; asks the configured leave question first when the tool set one |
-| y / n in the diff view | Arm / disarm the extra acknowledgement, when the tool configured one; Enter alone never confirms while it is unarmed |
+| The tool's second answer key in the diff view | Choose that answer under the same conditions as Enter; the diff's own keys win over it |
+| y / n in the diff view | Arm / disarm the extra acknowledgement, when the tool configured one; neither Enter nor the second answer key acts while it is unarmed |
 | Esc during a wait | Cancel the wait; the tool decides what follows |
 | Backspace on a choice screen | Return to the previous screen; while typing text it edits the text |
 | Shift+Tab | Move to the previous field; on the first field, return to the previous screen |
