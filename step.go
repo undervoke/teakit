@@ -31,8 +31,8 @@ type Form interface {
 }
 
 // Step is one screen of a flow: a List, a Form, or with neither, the leave
-// question alone. Run shows it as its own program, or under AltScreen as the
-// flow's current screen, and leaving it by any key erases it.
+// question alone. Run shows it as its own program, which leaving it by any
+// key erases, or under AltScreen as the flow's current screen.
 //
 // While text is being typed, in a text form or in a list's field, backspace
 // edits it and esc goes back. On a choice screen backspace goes back and esc

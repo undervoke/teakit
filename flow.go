@@ -82,7 +82,9 @@ func screenView(content string) tea.View {
 //
 // The program owns the terminal until flow returns, so show progress with
 // Wait rather than printing; tea.Println output is dropped on the alternate
-// screen. Ctrl+C between screens, or the program ending early, as on a
+// screen. Between screens the last one stays drawn but takes no keys, since
+// clearing the screen would make terminals such as iTerm2 save it to the
+// scrollback. Ctrl+C between screens, or the program ending early, as on a
 // termination signal, cancels flow's context with ErrLeave as its cause, and
 // a runner given that context returns as if ctrl+c was pressed on its screen.
 func AltScreen(ctx context.Context, out io.Writer, flow func(context.Context) error, opts ...tea.ProgramOption) error {
@@ -125,13 +127,14 @@ func hostOf(ctx context.Context) *flowHost {
 }
 
 // flowHost is the AltScreen program's model. It shows one runner's screen
-// at a time and is blank between screens.
+// at a time, and between screens the frame of the last one.
 type flowHost struct {
 	p      *tea.Program
 	cancel context.CancelCauseFunc
 	turn   chan struct{} // held by the runner whose screen is up
 	ended  chan struct{} // closed once the program has stopped
 	at     *attachment   // the screen that is up, or nil
+	last   string        // the frame drawn last
 	size   tea.Msg       // the last tea.WindowSizeMsg, for the next screen
 }
 
@@ -213,7 +216,15 @@ func (h *flowHost) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if h.at != msg.at {
 			return h, nil // from a screen that is done
 		}
-		return h, h.settle(h.at.s.Update(msg.msg))
+		inner := msg.msg
+		if inner == tea.RequestWindowSize() {
+			// The size Bubble Tea sends first reaches the screen anyway.
+			if h.size == nil {
+				return h, nil
+			}
+			inner = h.size
+		}
+		return h, h.settle(h.at.s.Update(inner))
 	case tea.WindowSizeMsg:
 		h.size = msg
 	case tea.KeyPressMsg:
@@ -223,6 +234,18 @@ func (h *flowHost) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if h.at == nil {
 		return h, nil
+	}
+	if h.size == nil {
+		// Nothing is drawn before the first size, so no input but ctrl+c
+		// may answer the screen yet.
+		switch msg := msg.(type) {
+		case tea.KeyMsg:
+			if msg.String() != "ctrl+c" {
+				return h, nil
+			}
+		case tea.PasteMsg, tea.MouseMsg:
+			return h, nil
+		}
 	}
 	return h, h.settle(h.at.s.Update(msg))
 }
@@ -242,9 +265,13 @@ func (h *flowHost) settle(cmd tea.Cmd) tea.Cmd {
 var cmdType = reflect.TypeFor[tea.Cmd]()
 
 // scope tags what cmd sends with at. A batch or sequence keeps its kind,
-// with each of its commands scoped. A message only Bubble Tea acts on goes
-// to it unwrapped, in order; it is dropped if at's screen is gone by the
-// time it comes back, but once sent it can act after the screen ends.
+// with each of its commands scoped. A request for the window size stays
+// scoped, so the host answers it with the size it holds: Bubble Tea would
+// resize its renderer to answer, which clears the alternate screen, and
+// terminals such as iTerm2 keep the cleared frame in the scrollback. Any
+// other message only Bubble Tea acts on goes to it unwrapped, in order; it
+// is dropped if at's screen is gone by the time it comes back, but once
+// sent it can act after the screen ends.
 func (at *attachment) scope(cmd tea.Cmd) tea.Cmd {
 	if cmd == nil {
 		return nil
@@ -262,7 +289,7 @@ func (at *attachment) scope(cmd tea.Cmd) tea.Cmd {
 			}
 			return cmds.Interface()
 		}
-		if programMsg(msg) {
+		if programMsg(msg) && msg != tea.RequestWindowSize() {
 			if at.over.Load() {
 				return nil
 			}
@@ -283,12 +310,14 @@ func programMsg(msg tea.Msg) bool {
 	return t.PkgPath() == reflect.TypeFor[tea.Model]().PkgPath() && !token.IsExported(t.Name())
 }
 
+// View keeps the frame it draws, since a screen that is done may have
+// nothing to draw. It draws nothing until the program's first size arrives,
+// because Bubble Tea clears the screen when it resizes for that size.
 func (h *flowHost) View() tea.View {
-	var content string
-	if h.at != nil {
-		content = h.at.s.View()
+	if h.at != nil && h.size != nil {
+		h.last = h.at.s.View()
 	}
-	v := screenView(content)
+	v := screenView(h.last)
 	v.AltScreen = true
 	return v
 }
