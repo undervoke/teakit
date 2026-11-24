@@ -33,15 +33,15 @@ if m.asking {
 
 ## Adopt the step runner
 
-For a wizard that runs each screen as its own program, `teakit.Step` runs one screen and erases it when the user leaves. `Run` returns `nil` when an option was picked or the form ended, `teakit.ErrBack` when the user went back, and `teakit.ErrLeave` when they left the flow.
+For a wizard that runs each screen as its own program, `teakit.Step` runs one screen and erases it when the user leaves. `Run` returns `nil` when an option was picked, the form ended, or the user went on from a diff, `teakit.ErrBack` when the user went back, and `teakit.ErrLeave` when they left the flow.
 
 | Screen | Integration |
 |---|---|
 | A question that takes one option | Run `&teakit.Step{Select: q, ...}`; after `nil`, `q.Cursor` is the option picked. For a value the options do not offer, set `q.Input = &teakit.Input{...}` with the unit, placeholder, and check, and read `q.Input.Value`, which never includes the unit. |
 | A question that takes any number of options | Run `&teakit.Step{MultiSelect: q, ...}`; `q.Checked`, one entry per option, changes in place, so it also keeps the choices of a user who goes back. |
 | A form | Run `&teakit.Step{Form: f, ...}` with `InputField`s, each holding the same `teakit.Input` a select takes, and `SelectField`s in `f.Fields`; each `Value` or `Choice` changes in place. Set `Choice` to -1 for a question with no answer yet, which the form does not submit. An `Accept` that reads other fields is sound, since submitting runs every one again. |
-| Changes to review | Put one `DiffField` per change to decide in a form, beside any other fields; its `Apply` is the answer, and `false` skips it. When skipping is not an option, reject it in `Accept`. The tool computes the lines in `Files`, and applies what was chosen after the form is submitted. Print `teakit.RenderDiff(files, width)` to keep a change in the scrollback. |
-| The leave question alone | Run a `Step` with no question or form, e.g. for an Exit row; `nil` means the user stayed. |
+| Changes to review | Run `&teakit.Step{Diff: d, ...}` after the screens that choose what changes, with the lines of every file, which the tool computes, in `d.Files`. After `nil`, apply them; after `teakit.ErrBack`, ask again. For a short diff beside a question or a form, return `teakit.RenderDiff(files, width)` from its `Body`; print the same to keep it in the scrollback. |
+| The leave question alone | Run a `Step` with no question, form or diff, e.g. for an Exit row; `nil` means the user stayed. |
 | A wait | `teakit.Wait(ctx, cfg, work)` shows a spinner beside the title and returns what `work` returns, `context.Canceled` on Esc, or `teakit.ErrLeave` on Ctrl+C. |
 
 Each tool sets `Back` when a previous screen exists, `Unsaved` when leaving a screen other than a form loses something (for example, a changed draft or setup answers past the first step), and `Leave` with the question's wording and hint. Hints such as "shift+tab to go back" are the tool's wording too.
@@ -50,7 +50,7 @@ To hide the shell's earlier text while the wizard runs, wrap the flow in `teakit
 
 Ctrl+C pressed between screens, while the flow works, cancels the flow's context with `teakit.ErrLeave` as its `context.Cause`, so that work should stop on it. The next screen then answers as if Ctrl+C was pressed on it: `ErrLeave` from `Step.Run` and `Wait`, and `teakit.Interrupt` from `AskLeave`. A termination signal gives the same answers, with or without `AltScreen`.
 
-A full-screen model embeds a step as `teakit.NewStepModel(step)`: call `SetSize` with its box, pass every message to `Update` and run every command it returns, and draw `View`. Once it is `Done`, read `Result`. Ask the terminal for key event types, as `tea.View.KeyboardEnhancements.ReportEventTypes`, so that a held key is known as one. The model can move its own cursor with `teakit.Move`, so its options wrap like a teakit select's.
+A full-screen model embeds a step as `teakit.NewStepModel(step)`: call `SetSize` with its box, pass every message to `Update` and run every command it returns, and draw `View`. Once it is `Done`, read `Result`. Ask the terminal for key event types, as `tea.View.KeyboardEnhancements.ReportEventTypes`, so that a held Enter does not go on from a diff. The model can move its own cursor with `teakit.Move`, so its options wrap like a teakit select's.
 
 ## Style text by its role
 

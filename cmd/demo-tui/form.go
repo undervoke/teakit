@@ -57,29 +57,14 @@ func demoForm(ctx context.Context) (string, error) {
 			},
 		},
 	}
-	service := &teakit.DiffField{
-		Title: "Start at login",
-		Files: []teakit.DiffFile{{
-			Path: "~/.config/runner/config.toml",
-			Sections: []teakit.DiffSection{{
-				Ops: []teakit.DiffOp{
-					{Kind: teakit.OpEqual, Text: "[service]"},
-					{Kind: teakit.OpDelete, Text: "autostart = false"},
-					{Kind: teakit.OpInsert, Text: "autostart = true"},
-				},
-			}},
-		}},
-		Hint: "enter apply · ↑/↓ scroll, then next · backspace skip · esc close",
-	}
 	f := &teakit.Form{
 		Title:    "Add a runner",
-		Fields:   []teakit.Field{name, image, disk, fallback, service},
+		Fields:   []teakit.Field{name, image, disk, fallback},
 		Hint:     "↑/↓ move · enter open or submit · shift+tab back · esc leave",
 		OpenHint: "enter lock · esc undo",
 	}
 	if err := (&teakit.Step{Form: f, Back: true}).Run(ctx); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("%q on %s with %s%s, then %q, at login: %t",
-		name.Value, image.Options[image.Choice], disk.Value, disk.Unit, fallback.Value, service.Apply), nil
+	return fmt.Sprintf("%q on %s with %s%s, then %q", name.Value, image.Options[image.Choice], disk.Value, disk.Unit, fallback.Value), nil
 }

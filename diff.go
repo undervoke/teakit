@@ -1,8 +1,11 @@
 package teakit
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 // DiffOpKind identifies one line of a section diff.
@@ -40,30 +43,89 @@ type DiffFile struct {
 	Sections []DiffSection
 }
 
-// RenderDiff draws files as a DiffField does, for text to print. Widths below
-// 1 default to 80 columns.
+// RenderDiff draws files as a Diff does, for text to print. Widths below 1
+// default to 80 columns.
 func RenderDiff(files []DiffFile, width int) string {
 	if width < 1 {
 		width = 80
 	}
-	return strings.Join(diffRows(files, width), "\n")
+	rows, _ := diffRows(files, width)
+	return strings.Join(rows, "\n")
 }
 
-func diffRows(files []DiffFile, width int) []string {
-	var rows []string
+// span is the rows from one up to another.
+type span struct{ from, to int }
+
+// diffRows draws files one after another, and returns where each one's head is.
+func diffRows(files []DiffFile, width int) (rows []string, heads []span) {
 	for i, f := range files {
+		place := ""
+		if len(files) > 1 {
+			place = fmt.Sprintf("%d/%d", i+1, len(files))
+		}
 		if i > 0 {
 			rows = append(rows, "")
 		}
-		if f.Path != "" {
-			for _, line := range diffWrapIndented(f.Path, width, 2) {
-				rows = append(rows, diffStyle(diffSGRBold, line))
-			}
-		}
+		head := span{from: len(rows)}
+		rows = append(rows, f.head(place, width)...)
+		head.to = len(rows)
+		heads = append(heads, head)
 		numbers := diffNumWidth(f)
 		for _, s := range f.Sections {
 			rows = append(rows, s.rows(width, numbers)...)
 		}
+	}
+	return rows, heads
+}
+
+// head draws the file's path, and beside it the file's place among the others
+// and how much changes in it.
+func (f DiffFile) head(place string, width int) []string {
+	var rows []string
+	if f.Path != "" {
+		for _, line := range diffWrapIndented(f.Path, width, 2) {
+			rows = append(rows, diffStyle(diffSGRBold, line))
+		}
+	}
+	return beside(rows, strings.TrimSpace(Muted.Render(place)+"  "+diffCounts(f)), width)
+}
+
+// diffCounts draws how many lines the files gain and lose.
+func diffCounts(files ...DiffFile) string {
+	var added, removed int
+	for _, f := range files {
+		for _, s := range f.Sections {
+			for _, op := range s.Ops {
+				switch op.Kind {
+				case OpInsert:
+					added++
+				case OpDelete:
+					removed++
+				}
+			}
+		}
+	}
+	var counts []string
+	if added > 0 {
+		counts = append(counts, diffStyle(diffSGRGreen, fmt.Sprintf("+%d", added)))
+	}
+	if removed > 0 {
+		counts = append(counts, diffStyle(diffSGRRed, fmt.Sprintf("-%d", removed)))
+	}
+	return strings.Join(counts, " ")
+}
+
+// beside puts text after the last of rows, or under it where it does not fit.
+func beside(rows []string, text string, width int) []string {
+	last := len(rows) - 1
+	switch {
+	case text == "":
+	case last < 0:
+		rows = append(rows, text)
+	case ansi.StringWidth(rows[last]+"  "+text) <= width:
+		rows[last] += "  " + text
+	default:
+		rows = append(rows, "  "+text)
 	}
 	return rows
 }

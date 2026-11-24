@@ -63,7 +63,7 @@ func (w inline) View() tea.View {
 }
 
 // screenView asks for key event types, so that a held key reports IsRepeat
-// and neither applies diffs nor submits a form.
+// and does not go on from a diff.
 func screenView(content string) tea.View {
 	v := tea.NewView(content)
 	v.KeyboardEnhancements.ReportEventTypes = true

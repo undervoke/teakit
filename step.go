@@ -18,10 +18,10 @@ var (
 	ErrLeave = errors.New("leave")
 )
 
-// Step is one screen of a flow: a Select, a MultiSelect, a Form, or with none
-// of them, the leave question alone. Run shows it as its own program, which
-// leaving it by any key erases, or under AltScreen as the flow's current
-// screen.
+// Step is one screen of a flow: a Select, a MultiSelect, a Form, a Diff, or
+// with none of them, the leave question alone. Run shows it as its own
+// program, which leaving it by any key erases, or under AltScreen as the
+// flow's current screen.
 //
 // Shift+tab goes back, in a form only from its first field. Esc leaves, asking
 // the leave question first in a form and wherever Unsaved is set. Where text
@@ -31,6 +31,7 @@ type Step struct {
 	Select      *Select
 	MultiSelect *MultiSelect
 	Form        *Form
+	Diff        *Diff
 	// Back is set when a previous screen exists.
 	Back bool
 	// Unsaved is set when leaving loses something, so esc asks first outside
@@ -73,9 +74,10 @@ func (s *Step) choice() choice {
 }
 
 // Run shows s until the user leaves it. It returns nil when the question was
-// answered, the form submitted, or the user stayed at a lone leave question;
-// ErrBack when the user went back; and ErrLeave when they left the flow or
-// the program ended without an answer, as on a termination signal.
+// answered, the form submitted, or the user went on from a diff or stayed at a
+// lone leave question; ErrBack when the user went back; and ErrLeave when they
+// left the flow or the program ended without an answer, as on a termination
+// signal.
 func (s *Step) Run(ctx context.Context, opts ...tea.ProgramOption) error {
 	m := NewStepModel(s)
 	if err := show(ctx, m, opts); err != nil {
@@ -105,14 +107,18 @@ type StepModel struct {
 // NewStepModel returns s for a new showing.
 func NewStepModel(s *Step) *StepModel {
 	m := &StepModel{s: s}
-	if c := s.choice(); c != nil {
+	c := s.choice()
+	switch {
+	case c != nil:
 		c.start()
-	} else if s.Form != nil {
+	case s.Form != nil:
 		s.Form.start()
-		s.Form.resize(screenWidth(0))
-	} else {
+	case s.Diff != nil:
+		s.Diff.start()
+	default:
 		m.ask()
 	}
+	m.resize(0, 0)
 	return m
 }
 
@@ -125,8 +131,11 @@ func (m *StepModel) SetSize(width, height int) {
 
 func (m *StepModel) resize(width, height int) {
 	m.width, m.height = width, height
-	if m.s.Form != nil {
+	switch {
+	case m.s.Form != nil:
 		m.s.Form.resize(screenWidth(width))
+	case m.s.Diff != nil:
+		m.s.Diff.resize(screenWidth(width))
 	}
 }
 
@@ -175,24 +184,10 @@ func (m *StepModel) Update(msg tea.Msg) tea.Cmd {
 	case s.Select != nil && s.Select.typing():
 		return s.Select.Input.edit(msg)
 	case s.Form != nil:
-		return m.fill(msg)
+		_, cmd := s.Form.update(msg)
+		return cmd
 	}
 	return nil
-}
-
-// fill passes msg to the form.
-func (m *StepModel) fill(msg tea.Msg) tea.Cmd {
-	f := m.s.Form
-	drawn, by := f.draw(screenWidth(m.width)), scroll{}
-	if m.height > 0 {
-		_, _, room := drawn.fit(len(m.head()), m.height)
-		by = drawn.scroll(room)
-	}
-	submitted, cmd := f.update(msg, by)
-	if submitted {
-		return m.end(nil)
-	}
-	return cmd
 }
 
 // head returns the rows above the screen.
@@ -218,7 +213,7 @@ func (m *StepModel) press(msg tea.KeyPressMsg) tea.Cmd {
 		switch next.Decision() {
 		case Stay:
 			m.quit = nil
-			if c == nil && s.Form == nil {
+			if c == nil && s.Form == nil && s.Diff == nil {
 				return m.end(nil)
 			}
 		case Leave, Interrupt:
@@ -228,7 +223,7 @@ func (m *StepModel) press(msg tea.KeyPressMsg) tea.Cmd {
 		key == "esc" && s.Back && (typing || s.Form != nil && s.Form.single()):
 		return m.end(ErrBack)
 	case key == "esc" && s.Form != nil && s.Form.editing():
-		return m.fill(msg)
+		s.Form.update(msg)
 	case key == "esc" && (s.Unsaved || s.Form != nil):
 		m.ask()
 	case key == "esc":
@@ -244,7 +239,18 @@ func (m *StepModel) press(msg tea.KeyPressMsg) tea.Cmd {
 			return m.end(nil)
 		}
 	case s.Form != nil:
-		return m.fill(msg)
+		submitted, cmd := s.Form.update(msg)
+		if submitted {
+			return m.end(nil)
+		}
+		return cmd
+	case s.Diff != nil:
+		// An enter held on the screen before must not go on from a diff unseen.
+		if key == "enter" && !msg.IsRepeat {
+			return m.end(nil)
+		}
+		_, _, room := s.Diff.draw(screenWidth(m.width)).fit(len(m.head()), m.height)
+		s.Diff.press(key, room)
 	}
 	return nil
 }
@@ -257,10 +263,16 @@ func (m *StepModel) View() string {
 		view, _ := leaveView(s.leave(), m.quit.Cursor(), width, m.height)
 		return view
 	}
-	if s.Form != nil {
-		return s.Form.draw(width).view(m.head(), m.height)
+	var r rows
+	switch {
+	case s.Form != nil:
+		r = s.Form.draw(width)
+	case s.Diff != nil:
+		r = s.Diff.draw(width)
+	default:
+		r = s.choice().list().draw(width)
 	}
-	return s.choice().list().draw(width).view(m.head(), m.height)
+	return r.view(m.head(), m.height)
 }
 
 // leaveView draws the leave question like the screens around it, in at

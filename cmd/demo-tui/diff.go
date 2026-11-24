@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	_ "embed"
-	"strings"
+	"errors"
+	"fmt"
+	"slices"
 
 	"github.com/undervoke/teakit"
 )
@@ -12,42 +14,38 @@ import (
 var diffSource string
 
 func demoDiff(ctx context.Context) (string, error) {
-	pick := &teakit.Select{
-		Title: "Which changes?",
-		Hint:  "↑/↓ move · enter choose · shift+tab back · esc leave",
+	pick := &teakit.MultiSelect{
+		Title: "Update what?",
+		Accept: func(checked []bool) error {
+			if !slices.Contains(checked, true) {
+				return errors.New("Check at least one.")
+			}
+			return nil
+		},
+		Hint: "space check · enter review · shift+tab back · esc leave",
 	}
 	for _, e := range diffExamples {
 		pick.Options = append(pick.Options, e.name)
+		pick.Checked = append(pick.Checked, true)
 	}
-	if err := (&teakit.Step{Select: pick, Back: true}).Run(ctx); err != nil {
-		return "", err
-	}
-	e := diffExamples[pick.Cursor]
-	f := &teakit.Form{
-		Title: e.title,
-		Hint:  "↑/↓ move · enter open or submit · shift+tab back · esc leave",
-	}
-	for _, file := range e.files {
-		f.Fields = append(f.Fields, &teakit.DiffField{
-			Files:      []teakit.DiffFile{file},
-			ApplyLabel: e.apply,
-			SkipLabel:  e.skip,
-			Accept:     e.accept,
-			Hint:       "enter apply · ↑/↓ scroll, then next · backspace skip · esc close",
-		})
-	}
-	if len(f.Fields) == 1 {
-		f.Hint = "enter apply · ↑/↓ scroll · shift+tab back"
-		f.Fields[0].(*teakit.DiffField).Hint = f.Hint
-	}
-	if err := (&teakit.Step{Form: f, Back: true}).Run(ctx); err != nil {
-		return "", err
-	}
-	var applied []string
-	for i, field := range f.Fields {
-		if field.(*teakit.DiffField).Apply {
-			applied = append(applied, e.files[i].Path)
+	for {
+		if err := (&teakit.Step{MultiSelect: pick, Back: true}).Run(ctx); err != nil {
+			return "", err
+		}
+		var files []teakit.DiffFile
+		for i, e := range diffExamples {
+			if pick.Checked[i] {
+				files = append(files, e.files...)
+			}
+		}
+		review := &teakit.Diff{
+			Title: "Review the update",
+			Files: files,
+			Hint:  "↑/↓ scroll · ←/→ file · enter apply · shift+tab back · esc leave",
+		}
+		err := (&teakit.Step{Diff: review, Back: true}).Run(ctx)
+		if !errors.Is(err, teakit.ErrBack) {
+			return fmt.Sprintf("changed files: %d", len(files)), err
 		}
 	}
-	return "applied " + strings.Join(applied, ", "), nil
 }
