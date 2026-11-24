@@ -22,18 +22,18 @@ var (
 // leaving it by any key erases, or under AltScreen as the flow's current
 // screen.
 //
-// In a form and in a select's input, esc goes back and backspace edits the
-// text. On a choice screen backspace goes back and esc leaves, asking the
-// leave question first when Unsaved is set; esc in a form or an input with no
-// previous screen leaves the same way. Shift+tab goes back, in a form only
-// from its first field. Ctrl+C leaves at once.
+// Shift+tab goes back, in a form only from its first field. Esc leaves, asking
+// the leave question first in a form and wherever Unsaved is set. Where text
+// is always being typed, in a select's input and a form of one field, esc
+// goes back instead while there is a previous screen. Ctrl+C leaves at once.
 type Step struct {
 	Select      *Select
 	MultiSelect *MultiSelect
 	Form        *Form
 	// Back is set when a previous screen exists.
 	Back bool
-	// Unsaved is set when leaving loses something, so esc asks first.
+	// Unsaved is set when leaving loses something, so esc asks first outside
+	// a form too.
 	Unsaved bool
 	// Leave words the leave question, which is shown like a select.
 	Leave LeaveConfig
@@ -48,6 +48,16 @@ type choice interface {
 	// press handles a key and reports whether it answered the question.
 	press(key string) bool
 	list() optionList
+}
+
+// leave returns the leave question's wording. A form's question has a title
+// even when the tool gives none, since a form always asks it.
+func (s *Step) leave() LeaveConfig {
+	cfg := s.Leave
+	if s.Form != nil && cfg.Title == "" {
+		cfg.Title = "Leave without submitting?"
+	}
+	return cfg
 }
 
 // choice returns the step's Select or MultiSelect, or nil.
@@ -73,8 +83,7 @@ func (s *Step) Run(ctx context.Context, opts ...tea.ProgramOption) error {
 		s.Form.start()
 		s.Form.resize(screenWidth(0))
 	} else {
-		q := NewLeave(s.Leave)
-		m.quit = &q
+		m.ask()
 	}
 	if err := show(ctx, m, opts); err != nil {
 		if interrupted(ctx) {
@@ -99,6 +108,12 @@ type stepModel struct {
 func (m *stepModel) Init() tea.Cmd { return nil }
 
 func (m *stepModel) Done() bool { return m.done }
+
+// ask puts up the leave question.
+func (m *stepModel) ask() {
+	q := NewLeave(m.s.leave())
+	m.quit = &q
+}
 
 func (m *stepModel) end(result error) tea.Cmd {
 	m.result, m.done = result, true
@@ -139,12 +154,11 @@ func (m *stepModel) Update(msg tea.Msg) tea.Cmd {
 func (m *stepModel) press(msg tea.KeyPressMsg) tea.Cmd {
 	s, c, key := m.s, m.s.choice(), msg.String()
 	typing := s.Select != nil && s.Select.typing()
-	editing := s.Form != nil || typing
 	switch {
 	case key == "ctrl+c":
 		return m.end(ErrLeave)
 	case m.quit != nil:
-		if _, shown := leaveView(s.Leave, m.quit.Cursor(), screenWidth(m.width), m.height); !shown {
+		if _, shown := leaveView(s.leave(), m.quit.Cursor(), screenWidth(m.width), m.height); !shown {
 			return nil
 		}
 		next, _ := m.quit.Update(msg)
@@ -158,13 +172,11 @@ func (m *stepModel) press(msg tea.KeyPressMsg) tea.Cmd {
 		case Leave, Interrupt:
 			return m.end(ErrLeave)
 		}
-	case key == "esc" && editing && s.Back,
-		key == "backspace" && s.Back && !editing,
-		key == "shift+tab" && s.Back && (s.Form == nil || s.Form.at == 0):
+	case key == "shift+tab" && s.Back && (s.Form == nil || s.Form.at == 0),
+		key == "esc" && s.Back && (typing || s.Form != nil && len(s.Form.Fields) == 1):
 		return m.end(ErrBack)
-	case key == "esc" && s.Unsaved:
-		q := NewLeave(s.Leave)
-		m.quit = &q
+	case key == "esc" && (s.Unsaved || s.Form != nil):
+		m.ask()
 	case key == "esc":
 		return m.end(ErrLeave)
 	case typing:
@@ -191,7 +203,7 @@ func (m *stepModel) View() string {
 	width := screenWidth(m.width)
 	s := m.s
 	if m.quit != nil {
-		view, _ := leaveView(s.Leave, m.quit.Cursor(), width, m.height)
+		view, _ := leaveView(s.leave(), m.quit.Cursor(), width, m.height)
 		return view
 	}
 	var head []string

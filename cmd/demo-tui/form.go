@@ -43,7 +43,7 @@ func demoForm(ctx context.Context) (string, error) {
 	f := &teakit.Form{
 		Title:  "Add a runner",
 		Fields: []teakit.Field{name, image, fallback},
-		Hint:   "tab next · shift+tab previous · enter continue · esc back",
+		Hint:   "tab next · shift+tab previous · enter continue · esc leave",
 	}
 	if err := (&teakit.Step{Form: f, Back: true}).Run(ctx); err != nil {
 		return "", err

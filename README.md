@@ -41,15 +41,15 @@ A behavior becomes a tool-supplied setting only when two tools actually need it 
 | Space | Check or uncheck the option at the cursor of a multi-select |
 | A number | Choose that option; with more than nine options, a digit waits for a second digit or Enter. The number of a select's input, and any number in a multi-select, moves there instead |
 | Esc on a choice screen | Leave, asking first when the tool says leaving needs confirmation |
-| Esc in a form or a select's input | Return to the previous screen; with none, leave as on a choice screen |
+| Esc in a form | Ask the leave question |
+| Esc in a select's input or a form of one field | Return to the previous screen; with none, the same as on a choice screen or in a form |
 | Esc on the leave question | Confirm leaving immediately |
 | Esc in the diff view | Cancel; asks the configured leave question first when the tool set one |
 | The tool's second answer key in the diff view | Choose that answer under the same conditions as Enter; the diff's own keys win over it |
 | y / n in the diff view | Arm / disarm the extra acknowledgement, when the tool configured one; neither Enter nor the second answer key acts while it is unarmed |
 | Esc during a wait | Cancel the wait; the tool decides what follows |
-| Backspace on a choice screen | Return to the previous screen; while typing text it edits the text |
 | Tab | Move to the next field |
-| Shift+Tab | Move to the previous field; on the first field, return to the previous screen |
+| Shift+Tab | Return to the previous screen; in a form, move to the previous field until the first |
 | Ctrl+C | Leave at once from any screen, including during a wait and, on the alternate screen, between screens |
 
 The leave question starts on the option to stay, so Enter keeps the user where they were.

@@ -95,7 +95,7 @@ type DiffConfig struct {
 	// CancelKeys holds exact tea.Key names that cancel like Esc (e.g. "q");
 	// built-in bindings win over these names.
 	CancelKeys []string
-	// Back makes Backspace answer DiffBack; otherwise it is ignored.
+	// Back makes Shift+Tab answer DiffBack; otherwise it is ignored.
 	Back bool
 	// Leave, when set, opens this leave question on cancel instead of
 	// cancelling at once.

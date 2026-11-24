@@ -16,7 +16,7 @@ func demoSelect(ctx context.Context) (string, error) {
 	s := &teakit.Select{
 		Title:   "How much memory?",
 		Options: []string{"8GiB", "16GiB", ""}, // the input takes the last one's place
-		Hint:    "↑/↓ move · enter choose · backspace back · esc leave",
+		Hint:    "↑/↓ move · enter choose · shift+tab back · esc leave",
 		Input: &teakit.Input{
 			Placeholder: "another size",
 			Unit:        "GiB",

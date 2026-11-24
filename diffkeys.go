@@ -29,7 +29,7 @@ func newDiffKeys(cfg DiffConfig, view viewport.KeyMap) diffKeys {
 		top: diffBinding("top", "g", "home"), bottom: diffBinding("bottom", "G", "end"),
 		next: diffBinding("next section", "]"), prev: diffBinding("previous section", "["),
 		enter: diffBinding(cfg.ApplyLabel, "enter"), accept: diffBinding("accept", "y", "Y"), undo: diffBinding("undo", "n", "N"),
-		back: diffBinding("back", "backspace"), cancel: diffBinding("cancel", "esc"), interrupt: diffBinding("exit", "ctrl+c"),
+		back: diffBinding("back", "shift+tab"), cancel: diffBinding("cancel", "esc"), interrupt: diffBinding("exit", "ctrl+c"),
 		extra: key.NewBinding(key.WithKeys(cfg.CancelKeys...)), view: view,
 	}
 	if cfg.AlternateKey != "" && !k.reserved(cfg.AlternateKey) {
@@ -92,7 +92,7 @@ func (m DiffModel) hintLine(width int, visibleData bool) string {
 	if m.cfg.Back {
 		full = append(full, k.back)
 	}
-	full = append(full, k.cancel, k.interrupt)
+	full = append(full, k.cancel)
 	short := append(append([]key.Binding{move, page, sections}, actions...), k.cancel)
 	mini := append(append([]key.Binding{briefMove}, actions...), briefCancel)
 	compact := append(append([]key.Binding{}, actions...), k.cancel)

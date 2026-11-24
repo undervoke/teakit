@@ -24,7 +24,7 @@ func demoMultiSelect(ctx context.Context) (string, error) {
 			}
 			return nil
 		},
-		Hint: "↑/↓ move · space check · enter continue · backspace back · esc leave",
+		Hint: "↑/↓ move · space check · enter continue · shift+tab back · esc leave",
 	}
 	if err := (&teakit.Step{MultiSelect: m, Back: true}).Run(ctx); err != nil {
 		return "", err

@@ -148,7 +148,7 @@ func leaveHint(cfg LeaveConfig) string {
 	if cfg.Hint != "" {
 		return cfg.Hint
 	}
-	return "↑/↓ k/j move · 1/2 or enter choose · esc leave · ctrl+c exit"
+	return "↑/↓ k/j move · 1/2 or enter choose · esc leave"
 }
 
 // Cursor returns the highlighted option's zero-based index: 0 for stay, 1 for
