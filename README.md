@@ -4,7 +4,7 @@ Bubble Tea components with one set of key conventions, shared by my terminal too
 
 Start with the **leave question**: embed it in a full-screen model or run it as an inline wizard step. A wizard that runs each screen as its own program can run its questions, forms, and waits through the **step runner**, optionally on the alternate screen so the shell's earlier text stays hidden. See [using and updating teakit](docs/consumers.md) for integration, version selection, and update PRs.
 
-Try every component and see the code behind it. Name a component, such as `select`, to go straight to it.
+Try every component and see the code behind it. Name a component, such as `select`, to go straight to it, or `styles` to see each role's look.
 
 ```sh
 go run github.com/undervoke/teakit/cmd/demo-tui@latest   # the latest release
@@ -25,6 +25,7 @@ teakit fixes what must behave the same in every tool, and each tool supplies wha
 | The static scrollback render left after a confirmed inline diff | Whether the host prints its own summary on top of it |
 | Questions with numbered options that take one option (`Select`) or any number of them (`MultiSelect`), forms (`Form`) of text and single-choice fields, all of which scroll on a short terminal; cancellable waits; and text wrapping | What its screens show, and which answers it accepts |
 | A select's input: sized to its text, with the unit as a fixed suffix, and without a unit the user types after the number | The unit, the placeholder, validation, and the form in which it stores the value |
+| The roles a text can have (`Header`, `Subhead`, `Focus`, `Chosen`, `Muted`, `Success`, `Warning`, `Error`), each one's look, and the role of each part of its screens | Which of its own words have a role |
 | When a form checks its fields: each when the user moves on from it, and all of them on submit | The check, which may read the other fields |
 | An optional runner that runs each screen as its own program and erases the screen when the user leaves it | The flow between screens, when leaving loses something, whether to use the runner or a full-screen model, whether the flow runs on the alternate screen, validation of its own values, and the wording of its screens and key hints |
 

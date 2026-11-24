@@ -12,7 +12,7 @@ func (m *DiffModel) rebuild() {
 	w := m.effWidth()
 	m.title = nil
 	if m.cfg.Title != "" {
-		m.title = strings.Split(ansi.Hardwrap(m.cfg.Title, w, true), "\n")
+		m.title = strings.Split(Header.Render(ansi.Hardwrap(m.cfg.Title, w, true)), "\n")
 	}
 	m.rows = nil
 	m.pins = nil
@@ -46,13 +46,13 @@ func diffPinnedLines(label string, width int, layout diffLayout) [2][]string {
 	lines := func(s string) []string {
 		out := diffWrapLine(s, width)
 		for i, line := range out {
-			out[i] = diffStyle(diffSGRFaint, line)
+			out[i] = Muted.Render(line)
 		}
 		return out
 	}
 	if layout.side {
 		heading := diffPadRight("before", layout.leftW) + " | " + diffPadRight("after", layout.rightW)
-		return [2][]string{append(lines(label), diffStyle(diffSGRFaint, heading))}
+		return [2][]string{append(lines(label), Muted.Render(heading))}
 	}
 	return [2][]string{lines(label + " · before"), lines(label + " · after")}
 }
@@ -185,7 +185,7 @@ func (m DiffModel) noticeLines() []string {
 func diffWarningLines(text string, width int) []string {
 	lines := diffWrapLine(text, width)
 	for i, line := range lines {
-		lines[i] = diffStyle(diffSGRYellow+";"+diffSGRBold, line)
+		lines[i] = Warning.Render(line)
 	}
 	return lines
 }
@@ -237,5 +237,5 @@ func (m DiffModel) statusLine(p diffPage) string {
 			status += " · " + diffItoa(below) + " more below"
 		}
 	}
-	return diffStyle(diffSGRFaint, ansi.Truncate(status, m.effWidth(), "…"))
+	return Muted.Render(ansi.Truncate(status, m.effWidth(), "…"))
 }

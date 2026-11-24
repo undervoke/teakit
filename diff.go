@@ -515,12 +515,12 @@ func (m DiffModel) pinnedContext(top int) []string {
 // View can give it the whole box; Update uses the same visibility check.
 func (m DiffModel) leaveQuestion(width int) []string {
 	var out []string
-	for _, line := range strings.Split(m.leave.View(), "\n") {
-		for _, wrapped := range diffWrapLine(ansi.Strip(line), width) {
+	for _, line := range m.leave.lines() {
+		for _, wrapped := range diffWrapLine(ansi.Strip(line.text), width) {
 			if diffWidth(wrapped) > width || len(out) >= m.height {
 				return nil
 			}
-			out = append(out, wrapped)
+			out = append(out, line.draw(wrapped))
 		}
 	}
 	return out
@@ -578,7 +578,7 @@ func diffContradiction(files []DiffFile) string {
 
 // diffIncompleteLines renders the incomplete state.
 func diffIncompleteLines(reason string) []string {
-	out := []string{diffStyle(diffSGRYellow+";"+diffSGRBold, "! The diff could not be prepared completely, so it cannot be applied.")}
+	out := []string{Warning.Render("! The diff could not be prepared completely, so it cannot be applied.")}
 	if reason != "" {
 		for _, line := range strings.Split(reason, "\n") {
 			out = append(out, line)
@@ -603,7 +603,7 @@ func renderStatic(cfg DiffConfig, files []DiffFile, width int, checked bool) str
 	}
 	var out []string
 	if cfg.Title != "" {
-		out = append(out, strings.Split(cfg.Title, "\n")...)
+		out = append(out, strings.Split(Header.Render(cfg.Title), "\n")...)
 	}
 	if cfg.Body != "" {
 		for _, paragraph := range strings.Split(cfg.Body, "\n") {
@@ -619,7 +619,7 @@ func renderStatic(cfg DiffConfig, files []DiffFile, width int, checked bool) str
 		if checked {
 			box = "[x]"
 		}
-		out = append(out, diffStyle(diffSGRYellow+";"+diffSGRBold, box+" "+cfg.Acknowledge))
+		out = append(out, Warning.Render(box+" "+cfg.Acknowledge))
 	}
 	return strings.Join(out, "\n")
 }

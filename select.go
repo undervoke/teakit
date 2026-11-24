@@ -9,12 +9,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-var (
-	dim   = lipgloss.NewStyle().Faint(true)
-	bold  = lipgloss.NewStyle().Bold(true)
-	alert = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
-)
-
 // Select is a question with numbered options, one per line, that takes one of
 // them. Run it with Step; after the step, Cursor is the option picked.
 // Options that do not fit the terminal scroll with the cursor.
@@ -133,7 +127,8 @@ func (s *Select) list() optionList {
 // Wrap folds text to width at spaces, continuing each folded line at its own
 // indent. Paths such as ~/Library/Application Support/self-hosted-gha stay
 // whole, which lipgloss's wrapping would break at the hyphen; only a word
-// wider than the column is split, since the screen would cut it off.
+// wider than the column is split, since the screen would cut it off. A style
+// that spans a fold continues on the next line.
 func Wrap(text string, width int) string {
 	var out []string
 	for _, line := range strings.Split(text, "\n") {
@@ -158,5 +153,9 @@ func Wrap(text string, width int) string {
 		}
 		out = append(out, row)
 	}
-	return strings.Join(out, "\n")
+	var b strings.Builder
+	w := lipgloss.NewWrapWriter(&b)
+	w.Write([]byte(strings.Join(out, "\n")))
+	w.Close()
+	return b.String()
 }

@@ -102,26 +102,46 @@ func (m LeaveModel) Update(msg tea.Msg) (LeaveModel, tea.Cmd) {
 // View renders title, body, and a numbered two-option list. The first
 // option always stays.
 func (m LeaveModel) View() string {
-	var b strings.Builder
+	var lines []string
+	for _, l := range m.lines() {
+		lines = append(lines, l.draw(l.text))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// leaveLine is a line of the default view and what draws it.
+type leaveLine struct {
+	text string
+	draw func(string) string
+}
+
+func (m LeaveModel) lines() []leaveLine {
+	var out []leaveLine
+	add := func(text string, draw func(string) string) {
+		for _, line := range strings.Split(text, "\n") {
+			out = append(out, leaveLine{line, draw})
+		}
+	}
+	plain := func(text string) string { return text }
 	if m.cfg.Title != "" {
-		b.WriteString(m.cfg.Title + "\n")
+		add(m.cfg.Title, func(text string) string { return Header.Render(Warning.Render(text)) })
 	}
 	if m.cfg.Body != "" {
-		b.WriteString(m.cfg.Body + "\n")
+		add(m.cfg.Body, plain)
 	}
 	if m.cfg.Title != "" || m.cfg.Body != "" {
-		b.WriteString("\n")
+		add("", plain)
 	}
-	labels := [...]string{m.cfg.StayLabel, m.cfg.LeaveLabel}
-	for i, label := range labels {
-		marker := "  "
+	for i, label := range [...]string{m.cfg.StayLabel, m.cfg.LeaveLabel} {
 		if i == m.cursor {
-			marker = "> "
+			add(fmt.Sprintf("> %d. %s", i+1, label), Focus.Render)
+		} else {
+			add(fmt.Sprintf("  %d. %s", i+1, label), plain)
 		}
-		fmt.Fprintf(&b, "%s%d. %s\n", marker, i+1, label)
 	}
-	b.WriteString("\n" + leaveHint(m.cfg))
-	return b.String()
+	add("", plain)
+	add(leaveHint(m.cfg), Muted.Render)
+	return out
 }
 
 func leaveHint(cfg LeaveConfig) string {

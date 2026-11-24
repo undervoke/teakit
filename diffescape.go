@@ -13,13 +13,11 @@ import (
 // SGR attributes used by the diff view. Colors are ANSI-16 foreground
 // indices, so the terminal's palette decides the shade.
 const (
-	diffSGRBold   = "1"
-	diffSGRFaint  = "2"
-	diffSGRChar   = "3"
-	diffSGRRed    = "31"
-	diffSGRGreen  = "32"
-	diffSGRYellow = "33"
-	diffSGRCyan   = "36"
+	diffSGRBold  = "1"
+	diffSGRFaint = "2"
+	diffSGRChar  = "3"
+	diffSGRRed   = "31"
+	diffSGRGreen = "32"
 )
 
 // diffStyle wraps nonempty text in SGR without styling blank cells.

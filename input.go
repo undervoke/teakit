@@ -20,7 +20,7 @@ func newTypedText(value, placeholder string) typedText {
 	in.Placeholder = placeholder
 	st := in.Styles()
 	st.Focused.Text, st.Blurred.Text = lipgloss.NewStyle(), lipgloss.NewStyle()
-	st.Focused.Placeholder, st.Blurred.Placeholder = dim, dim
+	st.Focused.Placeholder, st.Blurred.Placeholder = roleStyles[Muted], roleStyles[Muted]
 	st.Cursor.Blink = false
 	in.SetStyles(st)
 	in.SetValue(value)
@@ -116,5 +116,5 @@ func (in *Input) view() string {
 	if in.text.Position() < len([]rune(in.text.Value())) {
 		unit = " " + unit
 	}
-	return in.text.View() + dim.Render(unit)
+	return in.text.View() + Muted.Render(unit)
 }

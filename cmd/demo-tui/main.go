@@ -20,7 +20,7 @@ import (
 	"github.com/undervoke/teakit"
 )
 
-// target is a component, the demo that shows it, and the file the demo is in.
+// target is what a demo shows, the demo, and the file the demo is in.
 type target struct {
 	name   string
 	about  string
@@ -35,6 +35,7 @@ var targets = []target{
 	{"Wait", "show work in progress", demoWait, waitSource},
 	{"Leave", "ask before leaving", demoLeave, leaveSource},
 	{"Diff", "review changes", demoDiff, diffSource},
+	{"Styles", "see what each role looks like", demoStyles, stylesSource},
 }
 
 func main() {

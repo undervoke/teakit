@@ -60,6 +60,12 @@ Ctrl+C pressed between screens, while the flow works, cancels the flow's context
 
 A full-screen model can move its cursor with `teakit.Move`, so its options wrap like a teakit select's.
 
+## Style text by its role
+
+teakit styles the parts it draws, so a screen's title, headings, and hints need no style of their own. Give your own text a role instead of a color, so it looks the same in every tool: `teakit.Muted.Render("not installed")`. `go run github.com/undervoke/teakit/cmd/demo-tui@latest styles` shows them all.
+
+A role also works inside text teakit styles, over all of it or a part. `Title: teakit.Warning.Render("Delete the VM?")` makes the title yellow and keeps it bold, and the leave question's title is a warning already.
+
 ## Install or update a version
 
 1. Choose an exact tag from [Releases](https://github.com/undervoke/teakit/releases). Read the notes between your current version and the target; a v0 minor release can change the API or key behavior. `go list -m -versions github.com/undervoke/teakit` lists published Go versions.

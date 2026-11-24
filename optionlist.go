@@ -23,7 +23,7 @@ type optionList struct {
 
 func (l optionList) draw(width int) rows {
 	r := rows{cursor: l.cursor}
-	r.above = strings.Split(bold.Render(Wrap(l.title, width)), "\n")
+	r.above = strings.Split(Header.Render(Wrap(l.title, width)), "\n")
 	if l.body != nil {
 		r.above = append(r.above, strings.Split(l.body(width), "\n")...)
 	}
@@ -36,7 +36,7 @@ func (l optionList) draw(width int) rows {
 			r.items = append(r.items, "")
 		}
 		if head != "" {
-			r.items = append(r.items, strings.Split(head, "\n")...)
+			r.items = append(r.items, strings.Split(Subhead.Render(head), "\n")...)
 		}
 		if i == l.cursor {
 			r.row = len(r.items)
@@ -45,10 +45,10 @@ func (l optionList) draw(width int) rows {
 	}
 	r.below = []string{""}
 	if l.invalid != "" {
-		r.below = append(r.below, strings.Split(alert.Render(Wrap(l.invalid, width)), "\n")...)
+		r.below = append(r.below, strings.Split(Error.Render(Wrap(l.invalid, width)), "\n")...)
 		r.below = append(r.below, "")
 	}
-	r.below = append(r.below, strings.Split(dim.Render(Wrap(l.hint, width)), "\n")...)
+	r.below = append(r.below, strings.Split(Muted.Render(Wrap(l.hint, width)), "\n")...)
 	return r
 }
 
@@ -62,25 +62,21 @@ func (l optionList) option(i, width int) string {
 	default:
 		number += "[ ] "
 	}
-	indent := 2 + len(number)
+	focused := i == l.cursor
 	if l.input != nil && i == len(l.options)-1 {
 		prefix := "  " + number
-		if i == l.cursor {
-			prefix = bold.Render("❯ " + number)
+		if focused {
+			prefix = Focus.Render("❯ " + number)
 		}
 		input := prefix + l.input.view()
 		if invalid := l.input.text.invalid; invalid != "" {
-			pad := strings.Repeat(" ", indent)
-			input += "\n" + alert.Render(pad+strings.ReplaceAll(Wrap(invalid, max(width-indent, 1)), "\n", "\n"+pad))
+			pad := strings.Repeat(" ", lipgloss.Width(prefix))
+			input += "\n" + Error.Render(indented(pad, invalid, width))
 		}
 		return input
 	}
-	o := l.options[i]
-	if room := width - indent; room > 0 && lipgloss.Width(o) > room {
-		o = strings.ReplaceAll(Wrap(o, room), "\n", "\n"+strings.Repeat(" ", indent))
+	if focused {
+		return Focus.Render(indented("❯ "+number, l.options[i], width))
 	}
-	if i == l.cursor {
-		return bold.Render("❯ " + number + o)
-	}
-	return "  " + number + o
+	return indented("  "+number, l.options[i], width)
 }

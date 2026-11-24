@@ -4,6 +4,8 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // Form is a screen of fields, filled in one at a time. Enter or tab moves to
@@ -94,7 +96,7 @@ func (f *Form) submit() bool {
 func (f *Form) draw(width int) rows {
 	var r rows
 	if f.Title != "" {
-		r.above = strings.Split(bold.Render(Wrap(f.Title, width)), "\n")
+		r.above = strings.Split(Header.Render(Wrap(f.Title, width)), "\n")
 	}
 	if f.Body != nil {
 		r.above = append(r.above, strings.Split(f.Body(width), "\n")...)
@@ -113,22 +115,33 @@ func (f *Form) draw(width int) rows {
 		r.add(drawn)
 	}
 	if f.Hint != "" {
-		r.below = append([]string{""}, strings.Split(dim.Render(Wrap(f.Hint, width)), "\n")...)
+		r.below = append([]string{""}, strings.Split(Muted.Render(Wrap(f.Hint, width)), "\n")...)
 	}
 	return r
 }
 
 // drawField draws what is above a field's answer.
 func drawField(title, help string, width int, focused bool) []string {
-	title = Wrap(title, width)
+	title = Subhead.Render(Wrap(title, width))
 	if focused {
-		title = bold.Render(title)
+		title = Focus.Render(title)
 	}
 	rows := strings.Split(title, "\n")
 	if help != "" {
-		rows = append(rows, strings.Split(dim.Render(Wrap(help, width)), "\n")...)
+		rows = append(rows, strings.Split(Muted.Render(Wrap(help, width)), "\n")...)
 	}
 	return rows
+}
+
+// indented wraps text that does not fit in what is left of width after prefix,
+// and continues its lines under the first one. Text that fits keeps its spaces,
+// which may line up columns.
+func indented(prefix, text string, width int) string {
+	indent := ansi.StringWidth(prefix)
+	if room := max(width-indent, 1); lipgloss.Width(text) > room {
+		text = Wrap(text, room)
+	}
+	return prefix + strings.ReplaceAll(text, "\n", "\n"+strings.Repeat(" ", indent))
 }
 
 // InputField is a Form's field for typing text.
@@ -196,11 +209,11 @@ func (f *InputField) draw(width int, focused bool) ([]string, int) {
 	cursor := len(rows)
 	marker := "> "
 	if focused {
-		marker = bold.Render("❯ ")
+		marker = Focus.Render("❯ ")
 	}
 	rows = append(rows, marker+f.text.View())
 	if f.text.invalid != "" {
-		rows = append(rows, strings.Split(alert.Render(Wrap(f.text.invalid, width)), "\n")...)
+		rows = append(rows, strings.Split(Error.Render(Wrap(f.text.invalid, width)), "\n")...)
 	}
 	return rows, cursor
 }
@@ -236,15 +249,14 @@ func (f *SelectField) draw(width int, focused bool) ([]string, int) {
 	rows := drawField(f.Title, f.Help, width, focused)
 	cursor := len(rows)
 	for i, option := range f.Options {
-		option = strings.ReplaceAll(Wrap(option, max(width-2, 1)), "\n", "\n  ")
 		switch {
 		case i == f.Cursor && focused:
 			cursor = len(rows)
-			option = bold.Render("❯ " + option)
+			option = Focus.Render(indented("❯ ", option, width))
 		case i == f.Cursor:
-			option = "> " + option
+			option = Chosen.Render(indented("> ", option, width))
 		case focused:
-			option = "  " + option
+			option = indented("  ", option, width)
 		default:
 			continue
 		}

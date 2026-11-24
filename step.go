@@ -235,7 +235,7 @@ func screenWidth(terminal int) int {
 func leaveList(cfg LeaveConfig, cursor int) optionList {
 	cfg = NewLeave(cfg).cfg
 	l := optionList{
-		title:   cfg.Title,
+		title:   Warning.Render(cfg.Title),
 		options: []string{cfg.StayLabel, cfg.LeaveLabel},
 		cursor:  cursor,
 		hint:    leaveHint(cfg),

@@ -71,10 +71,10 @@ func (r rows) window(room int) []string {
 		}
 	}
 	if top > 0 && before > 0 {
-		shown[0] = dim.Render(fmt.Sprintf("  ↑ %d more", before))
+		shown[0] = Muted.Render(fmt.Sprintf("  ↑ %d more", before))
 	}
 	if end < len(r.items) && after > 0 {
-		shown[room-1] = dim.Render(fmt.Sprintf("  ↓ %d more", after))
+		shown[room-1] = Muted.Render(fmt.Sprintf("  ↓ %d more", after))
 	}
 	return shown
 }

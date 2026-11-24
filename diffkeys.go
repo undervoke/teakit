@@ -101,13 +101,13 @@ func (m DiffModel) hintLine(width int, visibleData bool) string {
 	h := help.Model{ShortSeparator: " · "}
 	for _, tier := range [][]key.Binding{full, short, mini, compact} {
 		if s := strings.TrimSpace(h.ShortHelpView(tier)); diffWidth(s) <= width {
-			return diffStyle(diffSGRFaint, s)
+			return Muted.Render(s)
 		}
 	}
 	if len(actions) > 0 {
 		if s := h.ShortHelpView([]key.Binding{actions[0], k.cancel}); diffWidth(s) <= width {
-			return diffStyle(diffSGRFaint, s)
+			return Muted.Render(s)
 		}
 	}
-	return diffStyle(diffSGRFaint, h.ShortHelpView([]key.Binding{k.cancel}))
+	return Muted.Render(h.ShortHelpView([]key.Binding{k.cancel}))
 }
