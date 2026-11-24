@@ -32,7 +32,7 @@ func TestRunnersTreatTerminationAsCtrlC(t *testing.T) {
 			return s.Run(context.Background(), opts...), ErrLeave
 		}},
 		{"Wait", func(opts []tea.ProgramOption) (any, any) {
-			_, err := Wait(context.Background(), func(int) string { return "working" }, func(ctx context.Context) (int, error) {
+			_, err := Wait(context.Background(), WaitConfig{Title: "working"}, func(ctx context.Context) (int, error) {
 				<-ctx.Done()
 				return 0, ctx.Err()
 			}, opts...)

@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -260,16 +261,24 @@ func leaveList(cfg LeaveConfig, cursor int) optionList {
 	return l
 }
 
-// Wait shows view while work runs, and returns what work returns. Esc
+// WaitConfig is what Wait shows beside its spinner.
+type WaitConfig struct {
+	Title string
+	// Body is the explanation under the title; nil for none.
+	Body func(width int) string
+	Hint string
+}
+
+// Wait shows a spinner while work runs, and returns what work returns. Esc
 // cancels work's context and returns context.Canceled; ctrl+c, or the
 // program ending before work does, as on a termination signal, returns
 // ErrLeave at once. When ctx ends first, Wait returns its error without
 // waiting for work, which should stop on its context. A panic in work ends
 // the program as any Bubble Tea command's would, and Wait returns its error.
-func Wait[T any](ctx context.Context, view func(width int) string, work func(context.Context) (T, error), opts ...tea.ProgramOption) (T, error) {
+func Wait[T any](ctx context.Context, cfg WaitConfig, work func(context.Context) (T, error), opts ...tea.ProgramOption) (T, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	m := &waitModel[T]{view: view}
+	m := &waitModel[T]{cfg: cfg, spin: spinner.New(spinner.WithSpinner(spinner.MiniDot))}
 	m.work = func() tea.Msg {
 		v, err := work(ctx)
 		return waitResult[T]{m, v, err}
@@ -306,7 +315,8 @@ type waitResult[T any] struct {
 }
 
 type waitModel[T any] struct {
-	view func(width int) string
+	cfg  WaitConfig
+	spin spinner.Model
 	// work runs work, and stop ends the wait when its context does.
 	work, stop tea.Cmd
 	width      int
@@ -314,7 +324,7 @@ type waitModel[T any] struct {
 	done       bool
 }
 
-func (m *waitModel[T]) Init() tea.Cmd { return tea.Batch(m.work, m.stop) }
+func (m *waitModel[T]) Init() tea.Cmd { return tea.Batch(m.work, m.stop, m.spin.Tick) }
 
 func (m *waitModel[T]) Done() bool { return m.done }
 
@@ -332,6 +342,10 @@ func (m *waitModel[T]) Update(msg tea.Msg) tea.Cmd {
 		if msg.from == m {
 			return m.end(msg)
 		}
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spin, cmd = m.spin.Update(msg)
+		return cmd
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 	case tea.KeyPressMsg:
@@ -345,4 +359,14 @@ func (m *waitModel[T]) Update(msg tea.Msg) tea.Cmd {
 	return nil
 }
 
-func (m *waitModel[T]) View() string { return m.view(screenWidth(m.width)) }
+func (m *waitModel[T]) View() string {
+	width := screenWidth(m.width)
+	view := Header.Render(indented(m.spin.View()+" ", m.cfg.Title, width))
+	if m.cfg.Body != nil {
+		view += "\n" + m.cfg.Body(width)
+	}
+	if m.cfg.Hint != "" {
+		view += "\n\n" + Muted.Render(Wrap(m.cfg.Hint, width))
+	}
+	return view
+}

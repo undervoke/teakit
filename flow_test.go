@@ -185,10 +185,10 @@ func TestFlowKeepsTheFrame(t *testing.T) {
 		}
 		return msg
 	}
-	show := func(ctx context.Context, view, drawn string) error {
-		_, err := Wait(ctx, func(int) string { return view }, func(ctx context.Context) (struct{}, error) {
+	show := func(ctx context.Context, cfg WaitConfig) error {
+		_, err := Wait(ctx, cfg, func(ctx context.Context) (struct{}, error) {
 			select {
-			case <-log.shown[drawn]:
+			case <-log.shown[cfg.Title]:
 			case <-ctx.Done():
 			}
 			return struct{}{}, ctx.Err()
@@ -196,12 +196,12 @@ func TestFlowKeepsTheFrame(t *testing.T) {
 		return err
 	}
 	err := AltScreen(ctx, log, func(ctx context.Context) error {
-		if err := show(ctx, "HEADER\ndetail", "HEADER"); err != nil {
+		if err := show(ctx, WaitConfig{Title: "HEADER", Hint: "detail"}); err != nil {
 			return err
 		}
 		// Long enough for the renderer to draw what shows between screens.
 		time.Sleep(50 * time.Millisecond)
-		return show(ctx, "next", "next")
+		return show(ctx, WaitConfig{Title: "next"})
 	}, tea.WithInput(nil), tea.WithWindowSize(40, 10), tea.WithFilter(hold))
 	if err != nil {
 		t.Fatalf("got %v, want both screens shown", err)

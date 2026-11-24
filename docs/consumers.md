@@ -50,7 +50,7 @@ For a wizard that runs each screen as its own program, `teakit.Step` runs one sc
 | A question that takes any number of options | Run `&teakit.Step{MultiSelect: q, ...}`; `q.Checked`, one entry per option, changes in place, so it also keeps the choices of a user who goes back. |
 | A form | Run `&teakit.Step{Form: f, ...}` with `InputField`s, each holding the same `teakit.Input` a select takes, and `SelectField`s in `f.Fields`; each `Value` or `Choice` changes in place. Set `Choice` to -1 for a question with no answer yet, which the form does not submit. An `Accept` that reads other fields is sound, since submitting runs every one again. |
 | The leave question alone | Run a `Step` with no question or form, e.g. for an Exit row; `nil` means the user stayed. |
-| A wait | `teakit.Wait(ctx, view, work)` returns what `work` returns, `context.Canceled` on Esc, or `teakit.ErrLeave` on Ctrl+C. |
+| A wait | `teakit.Wait(ctx, cfg, work)` shows a spinner beside the title and returns what `work` returns, `context.Canceled` on Esc, or `teakit.ErrLeave` on Ctrl+C. |
 
 Each tool sets `Back` when a previous screen exists, `Unsaved` when leaving a screen other than a form loses something (for example, a changed draft or setup answers past the first step), and `Leave` with the question's wording and hint. Hints such as "shift+tab to go back" are the tool's wording too.
 

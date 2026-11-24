@@ -12,10 +12,11 @@ import (
 var waitSource string
 
 func demoWait(ctx context.Context) (string, error) {
-	view := func(width int) string {
-		return teakit.Wrap("Looking up your repositories…", width) + "\n\nesc cancel"
+	cfg := teakit.WaitConfig{
+		Title: "Looking up your repositories…",
+		Hint:  "esc cancel",
 	}
-	return teakit.Wait(ctx, view, func(ctx context.Context) (string, error) {
+	return teakit.Wait(ctx, cfg, func(ctx context.Context) (string, error) {
 		select {
 		case <-time.After(3 * time.Second):
 			return "4 repositories", nil
