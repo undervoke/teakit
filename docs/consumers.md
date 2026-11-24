@@ -1,6 +1,6 @@
 # Using and updating teakit
 
-Add teakit to the Go module that builds your terminal UI. Its module path is `github.com/undervoke/teakit`; it requires Go 1.26.0 and Bubble Tea v2.1.2, and does not require huh. Go keeps a higher Bubble Tea version if another dependency in your build requires one.
+Add teakit to the Go module that builds your terminal UI. Its module path is `github.com/undervoke/teakit`; it requires Go 1.26.0 and Bubble Tea v2.1.2. Go keeps a higher Bubble Tea version if another dependency in your build requires one.
 
 ## Adopt the leave question
 
@@ -46,33 +46,19 @@ For a wizard that runs each screen as its own program, `teakit.Step` runs one sc
 
 | Screen | Integration |
 |---|---|
-| A list | Run `&teakit.Step{List: l, ...}`; after `nil`, `l.Cursor` is the option picked. For a value the options do not offer, set `l.Field = teakit.NewField(cfg)` with the unit, placeholder, and check, and read `l.Field.Value()`, which never includes the unit. |
-| A form | Pass the form through a small adapter implementing `teakit.Form`, and set `Text` when it is for typing text. teakit does not import huh. |
-| The leave question alone | Run a `Step` with neither `List` nor `Form`, e.g. for an Exit row; `nil` means the user stayed. |
+| A question that takes one option | Run `&teakit.Step{Select: q, ...}`; after `nil`, `q.Cursor` is the option picked. For a value the options do not offer, set `q.Input = &teakit.Input{...}` with the unit, placeholder, and check, and read `q.Input.Value`, which never includes the unit. |
+| A question that takes any number of options | Run `&teakit.Step{MultiSelect: q, ...}`; `q.Checked`, one entry per option, changes in place, so it also keeps the choices of a user who goes back. |
+| A form | Run `&teakit.Step{Form: f, ...}` with `InputField`s and `SelectField`s in `f.Fields`; each `Value` or `Cursor` changes in place. An `Accept` that reads other fields is sound, since submitting runs every one again. |
+| The leave question alone | Run a `Step` with no question or form, e.g. for an Exit row; `nil` means the user stayed. |
 | A wait | `teakit.Wait(ctx, view, work)` returns what `work` returns, `context.Canceled` on Esc, or `teakit.ErrLeave` on Ctrl+C. |
 
-Each tool sets `Back` when a previous screen exists, `Unsaved` when leaving loses something (for example, a changed draft or setup answers past the first step), and `Leave` with the question's wording and hint. Hints such as "esc to go back" are the tool's wording too. For a huh form, the adapter is:
-
-```go
-type huhForm struct {
-    *huh.Form
-    first huh.Field // Shift+Tab here goes back
-}
-
-func (f huhForm) Update(msg tea.Msg) tea.Cmd {
-    _, cmd := f.Form.Update(msg)
-    return cmd
-}
-
-func (f huhForm) Done() bool    { return f.State != huh.StateNormal }
-func (f huhForm) AtFirst() bool { return f.GetFocusedField() == f.first }
-```
+Each tool sets `Back` when a previous screen exists, `Unsaved` when leaving loses something (for example, a changed draft or setup answers past the first step), and `Leave` with the question's wording and hint. Hints such as "esc to go back" are the tool's wording too.
 
 To hide the shell's earlier text while the wizard runs, wrap the flow in `teakit.AltScreen(ctx, os.Stderr, func(ctx context.Context) error { ... })` and run every screen inside with the flow's `ctx`. The flow then runs as one Bubble Tea program on the alternate screen: each runner shows its screen in that program and ignores its own program options, so pass options such as `tea.WithInput` to `AltScreen`. Leave out `tea.WithFilter` there: the program switches screens with its own messages, which the filter would see instead of what the screens receive. The program owns the terminal until the flow returns, so show work in progress with `teakit.Wait` rather than printing. Between screens the last one stays drawn but takes no keys: clearing it would make terminals such as iTerm2 keep it in the scrollback. A confirmed `ReviewDiff` prints nothing there; print `teakit.RenderDiff(files, width)` after `AltScreen` returns to keep the diff.
 
 Ctrl+C pressed between screens, while the flow works, cancels the flow's context with `teakit.ErrLeave` as its `context.Cause`, so that work should stop on it. The next screen then answers as if Ctrl+C was pressed on it: `ErrLeave` from `Step.Run` and `Wait`, `teakit.Interrupt` from `AskLeave`, and `teakit.DiffInterrupt` from `ReviewDiff`. A termination signal gives the same answers, with or without `AltScreen`.
 
-A full-screen model can move its cursor with `teakit.Move`, so its options wrap like teakit lists.
+A full-screen model can move its cursor with `teakit.Move`, so its options wrap like a teakit select's.
 
 ## Install or update a version
 

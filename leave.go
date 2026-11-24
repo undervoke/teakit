@@ -138,8 +138,8 @@ func (m LeaveModel) Cursor() int { return m.cursor }
 // Decision reports the answer, or Pending while unanswered.
 func (m LeaveModel) Decision() Decision { return m.decision }
 
-// leaveScreen shows the question for AskLeave like a Step without List or
-// Form.
+// leaveScreen shows the question for AskLeave like a Step that has nothing
+// else to show.
 type leaveScreen struct {
 	inner         LeaveModel
 	width, height int

@@ -28,7 +28,7 @@ func TestRunnersTreatTerminationAsCtrlC(t *testing.T) {
 		run  func(opts []tea.ProgramOption) (got, want any)
 	}{
 		{"Step", func(opts []tea.ProgramOption) (any, any) {
-			s := &Step{List: &List{Title: "Pick", Options: []string{"a", "b"}}}
+			s := &Step{Select: &Select{Title: "Pick", Options: []string{"a", "b"}}}
 			return s.Run(context.Background(), opts...), ErrLeave
 		}},
 		{"Wait", func(opts []tea.ProgramOption) (any, any) {
@@ -49,7 +49,7 @@ func TestRunnersTreatTerminationAsCtrlC(t *testing.T) {
 		{"AltScreen", func(opts []tea.ProgramOption) (any, any) {
 			var err error
 			AltScreen(context.Background(), io.Discard, func(ctx context.Context) error {
-				err = (&Step{List: &List{Title: "Pick", Options: []string{"a", "b"}}}).Run(ctx)
+				err = (&Step{Select: &Select{Title: "Pick", Options: []string{"a", "b"}}}).Run(ctx)
 				return nil
 			}, opts...)
 			return err, ErrLeave

@@ -15,25 +15,21 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-// testForm is a Form whose Init command the test controls; formDoneMsg
-// ends it.
-type testForm struct {
+// testScreen is a screen with a command of its own, which any key ends.
+type testScreen struct {
 	init tea.Cmd
 	done bool
 }
 
-type formDoneMsg struct{}
+func (s *testScreen) Init() tea.Cmd { return s.init }
 
-func (f *testForm) Init() tea.Cmd { return f.init }
-
-func (f *testForm) Update(msg tea.Msg) tea.Cmd {
-	_, f.done = msg.(formDoneMsg)
+func (s *testScreen) Update(msg tea.Msg) tea.Cmd {
+	_, s.done = msg.(tea.KeyPressMsg)
 	return nil
 }
 
-func (f *testForm) View() string  { return "form" }
-func (f *testForm) Done() bool    { return f.done }
-func (f *testForm) AtFirst() bool { return true }
+func (s *testScreen) View() string { return "screen" }
+func (s *testScreen) Done() bool   { return s.done }
 
 // TestStaleCommandCannotAnswerNextScreen catches an AltScreen host that
 // hands a finished screen's command results to the next screen, which then
@@ -60,92 +56,14 @@ func TestStaleCommandCannotAnswerNextScreen(t *testing.T) {
 	}()
 	var got error
 	AltScreen(context.Background(), io.Discard, func(ctx context.Context) error {
-		(&Step{Form: &testForm{init: enter}}).Run(ctx)
+		show(ctx, &testScreen{init: enter}, nil)
 		ctx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
 		defer cancel()
-		got = (&Step{List: &List{Title: "Pick", Options: []string{"a", "b"}}, Head: head}).Run(ctx)
+		got = (&Step{Select: &Select{Title: "Pick", Options: []string{"a", "b"}}, Head: head}).Run(ctx)
 		return nil
 	}, tea.WithInput(in))
 	if got != context.DeadlineExceeded {
 		t.Fatalf("got %v, want the second step's deadline", got)
-	}
-}
-
-// TestLeaveQuestionHoldsTheScreen catches a step that lets a message for the
-// screen under the leave question end it, so Run returns nil although the
-// user answered neither way.
-func TestLeaveQuestionHoldsTheScreen(t *testing.T) {
-	in, keys := io.Pipe()
-	defer keys.Close()
-	release := make(chan struct{})
-	form := &testForm{init: func() tea.Msg {
-		<-release
-		return formDoneMsg{}
-	}}
-	// Release the form's message once Esc has opened the question, and
-	// answer once that message has arrived.
-	var opened sync.Once
-	watch := func(_ tea.Model, msg tea.Msg) tea.Msg {
-		switch msg := msg.(type) {
-		case tea.KeyPressMsg:
-			if msg.String() == "esc" {
-				opened.Do(func() { close(release) })
-			}
-		case formDoneMsg:
-			go keys.Write([]byte("2"))
-		}
-		return msg
-	}
-	go keys.Write([]byte("\x1b"))
-	err := (&Step{Form: form, Unsaved: true}).Run(context.Background(), tea.WithInput(in), tea.WithOutput(io.Discard), tea.WithFilter(watch))
-	if err != ErrLeave {
-		t.Fatalf("got %v, want ErrLeave from the leave answer", err)
-	}
-}
-
-// sizeForm records the window sizes it receives, and ends at want of them.
-type sizeForm struct {
-	testForm
-	want int
-	got  []tea.WindowSizeMsg
-}
-
-func (f *sizeForm) Update(msg tea.Msg) tea.Cmd {
-	if size, ok := msg.(tea.WindowSizeMsg); ok {
-		f.got = append(f.got, size)
-		f.done = len(f.got) == f.want
-	}
-	return nil
-}
-
-// TestFlowAnswersWindowSizeRequest catches an AltScreen host that passes a
-// screen's window-size request, such as the one huh's Form.Init makes, on
-// to Bubble Tea, which answers by resizing its renderer: that clears the
-// alternate screen, and iTerm2 keeps the cleared frame in the scrollback.
-func TestFlowAnswersWindowSizeRequest(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	reached := false
-	watch := func(_ tea.Model, msg tea.Msg) tea.Msg {
-		reached = reached || msg == tea.RequestWindowSize()
-		return msg
-	}
-	asking := &sizeForm{testForm: testForm{init: tea.RequestWindowSize}, want: 2}
-	err := AltScreen(ctx, io.Discard, func(ctx context.Context) error {
-		// The first screen ends on the program's size, so the flow holds one
-		// before the second asks.
-		if err := (&Step{Form: &sizeForm{want: 1}}).Run(ctx); err != nil {
-			return err
-		}
-		return (&Step{Form: asking}).Run(ctx)
-	}, tea.WithInput(nil), tea.WithWindowSize(40, 10), tea.WithFilter(watch))
-	if err != nil || reached {
-		t.Fatalf("got %v, and the request reached Bubble Tea: %v", err, reached)
-	}
-	for _, size := range asking.got {
-		if size != (tea.WindowSizeMsg{Width: 40, Height: 10}) {
-			t.Fatalf("got %v, want the flow's 40x10", size)
-		}
 	}
 }
 
@@ -295,7 +213,7 @@ func TestFlowKeepsTheFrame(t *testing.T) {
 
 // TestFlowStaysAtLoneLeaveQuestion catches an AltScreen host that lets a
 // key answer a screen before the program's first size lets it be drawn, or
-// that draws a screen once it is done: a Step without List or Form has
+// that draws a screen once it is done: a Step without a question or a Form has
 // nothing to draw after the user stays, and drawing it panics.
 func TestFlowStaysAtLoneLeaveQuestion(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)

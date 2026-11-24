@@ -3,6 +3,7 @@ package teakit
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -16,56 +17,62 @@ var (
 	ErrLeave = errors.New("leave")
 )
 
-// Form is a screen of fields that a Step hosts, such as a huh form behind a
-// small adapter. The step handles the navigation keys before the form sees
-// them.
-type Form interface {
-	Init() tea.Cmd
-	Update(tea.Msg) tea.Cmd
-	View() string
-	// Done reports that the form has ended, normally by being submitted.
-	Done() bool
-	// AtFirst reports that the first field has focus; Step reads it only for
-	// a text form.
-	AtFirst() bool
-}
-
-// Step is one screen of a flow: a List, a Form, or with neither, the leave
-// question alone. Run shows it as its own program, which leaving it by any
-// key erases, or under AltScreen as the flow's current screen.
+// Step is one screen of a flow: a Select, a MultiSelect, a Form, or with none
+// of them, the leave question alone. Run shows it as its own program, which
+// leaving it by any key erases, or under AltScreen as the flow's current
+// screen.
 //
-// While text is being typed, in a text form or in a list's field, backspace
-// edits it and esc goes back. On a choice screen backspace goes back and esc
-// leaves, asking the leave question first when Unsaved is set; esc while
-// typing with no previous screen leaves the same way. Shift+tab goes back,
-// in a text form only from its first field. Ctrl+C leaves at once.
+// In a form and in a select's input, esc goes back and backspace edits the
+// text. On a choice screen backspace goes back and esc leaves, asking the
+// leave question first when Unsaved is set; esc in a form or an input with no
+// previous screen leaves the same way. Shift+tab goes back, in a form only
+// from its first field. Ctrl+C leaves at once.
 type Step struct {
-	List *List
-	Form Form
-	// Text marks Form as a form for typing text.
-	Text bool
+	Select      *Select
+	MultiSelect *MultiSelect
+	Form        *Form
 	// Back is set when a previous screen exists.
 	Back bool
 	// Unsaved is set when leaving loses something, so esc asks first.
 	Unsaved bool
-	// Leave words the leave question, which is shown as a list.
+	// Leave words the leave question, which is shown like a select.
 	Leave LeaveConfig
-	// Head is shown above the list or form; nil for nothing.
+	// Head is shown above the screen; nil for nothing.
 	Head func(width int) string
-	// Hint is shown under the form.
-	Hint string
 }
 
-// Run shows s until the user leaves it. It returns nil when an option was
-// picked, the form ended, or the user stayed at a lone leave question;
+// choice is a question with options: a Select or a MultiSelect.
+type choice interface {
+	// start readies the question for a new showing.
+	start()
+	// press handles a key and reports whether it answered the question.
+	press(key string) bool
+	list() optionList
+}
+
+// choice returns the step's Select or MultiSelect, or nil.
+func (s *Step) choice() choice {
+	switch {
+	case s.Select != nil:
+		return s.Select
+	case s.MultiSelect != nil:
+		return s.MultiSelect
+	}
+	return nil
+}
+
+// Run shows s until the user leaves it. It returns nil when the question was
+// answered, the form submitted, or the user stayed at a lone leave question;
 // ErrBack when the user went back; and ErrLeave when they left the flow or
 // the program ended without an answer, as on a termination signal.
 func (s *Step) Run(ctx context.Context, opts ...tea.ProgramOption) error {
 	m := &stepModel{s: s}
-	if s.List != nil {
-		s.List.focusField()
-	}
-	if s.List == nil && s.Form == nil {
+	if c := s.choice(); c != nil {
+		c.start()
+	} else if s.Form != nil {
+		s.Form.start()
+		s.Form.resize(screenWidth(0))
+	} else {
 		q := NewLeave(s.Leave)
 		m.quit = &q
 	}
@@ -82,22 +89,14 @@ func (s *Step) Run(ctx context.Context, opts ...tea.ProgramOption) error {
 }
 
 type stepModel struct {
-	s *Step
-	// quit is the leave question while it is up, and held what arrived for
-	// the screen under it meanwhile.
-	quit          *LeaveModel
-	held          []tea.Msg
+	s             *Step
+	quit          *LeaveModel // the leave question while it is up
 	width, height int
 	result        error
 	done          bool
 }
 
-func (m *stepModel) Init() tea.Cmd {
-	if m.s.Form == nil {
-		return nil
-	}
-	return m.s.Form.Init()
-}
+func (m *stepModel) Init() tea.Cmd { return nil }
 
 func (m *stepModel) Done() bool { return m.done }
 
@@ -114,82 +113,78 @@ func (m *stepModel) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		if s.Form != nil {
+			s.Form.resize(screenWidth(m.width))
+		}
+		return nil
 	case tea.KeyPressMsg:
-		key := msg.String()
-		typing := s.List != nil && s.List.typing()
-		editing := s.Text || typing
-		switch {
-		case key == "ctrl+c":
-			return m.end(ErrLeave)
-		case m.quit != nil:
-			if _, shown := leaveView(s.Leave, m.quit.Cursor(), screenWidth(m.width), m.height); !shown {
-				return nil
-			}
-			next, _ := m.quit.Update(msg)
-			*m.quit = next
-			switch next.Decision() {
-			case Stay:
-				m.quit = nil
-				if s.List == nil && s.Form == nil {
-					return m.end(nil)
-				}
-				return m.replay()
-			case Leave, Interrupt:
-				return m.end(ErrLeave)
-			}
-			return nil
-		case key == "esc" && editing && s.Back,
-			key == "backspace" && s.Back && !editing,
-			key == "shift+tab" && s.Back && (!s.Text || s.Form.AtFirst()):
-			return m.end(ErrBack)
-		case key == "esc" && s.Unsaved:
-			q := NewLeave(s.Leave)
-			m.quit = &q
-			return nil
-		case key == "esc":
-			return m.end(ErrLeave)
-		case typing:
-			accepted, cmd := s.List.typeKey(msg)
-			if accepted {
-				return m.end(nil)
-			}
-			return cmd
-		case s.List != nil:
-			picked := s.List.press(key)
-			s.List.focusField()
-			if picked {
-				return m.end(nil)
-			}
-			return nil
-		}
-	default:
+		return m.press(msg)
+	case tea.PasteMsg:
 		if m.quit != nil {
-			// The leave question owns the input, so the screen under it
-			// neither changes nor ends until the user stays.
-			switch msg.(type) {
-			case tea.PasteMsg, tea.KeyReleaseMsg:
-			default:
-				m.held = append(m.held, msg)
-			}
 			return nil
 		}
 	}
-	if s.List != nil {
-		// The field's own messages, such as the text ctrl+v reads from the
-		// clipboard, go back to it.
-		if _, size := msg.(tea.WindowSizeMsg); !size && s.List.typing() && m.quit == nil {
-			return s.List.Field.edit(msg)
+	// What is left is for the text being typed, such as what ctrl+v reads
+	// from the clipboard.
+	switch {
+	case s.Select != nil && s.Select.typing():
+		return s.Select.Input.edit(msg)
+	case s.Form != nil:
+		_, cmd := s.Form.update(msg)
+		return cmd
+	}
+	return nil
+}
+
+func (m *stepModel) press(msg tea.KeyPressMsg) tea.Cmd {
+	s, c, key := m.s, m.s.choice(), msg.String()
+	typing := s.Select != nil && s.Select.typing()
+	editing := s.Form != nil || typing
+	switch {
+	case key == "ctrl+c":
+		return m.end(ErrLeave)
+	case m.quit != nil:
+		if _, shown := leaveView(s.Leave, m.quit.Cursor(), screenWidth(m.width), m.height); !shown {
+			return nil
 		}
-		return nil
+		next, _ := m.quit.Update(msg)
+		*m.quit = next
+		switch next.Decision() {
+		case Stay:
+			m.quit = nil
+			if c == nil && s.Form == nil {
+				return m.end(nil)
+			}
+		case Leave, Interrupt:
+			return m.end(ErrLeave)
+		}
+	case key == "esc" && editing && s.Back,
+		key == "backspace" && s.Back && !editing,
+		key == "shift+tab" && s.Back && (s.Form == nil || s.Form.at == 0):
+		return m.end(ErrBack)
+	case key == "esc" && s.Unsaved:
+		q := NewLeave(s.Leave)
+		m.quit = &q
+	case key == "esc":
+		return m.end(ErrLeave)
+	case typing:
+		accepted, cmd := s.Select.typeKey(msg)
+		if accepted {
+			return m.end(nil)
+		}
+		return cmd
+	case c != nil:
+		if c.press(key) {
+			return m.end(nil)
+		}
+	case s.Form != nil:
+		submitted, cmd := s.Form.update(msg)
+		if submitted {
+			return m.end(nil)
+		}
+		return cmd
 	}
-	if s.Form == nil {
-		return nil
-	}
-	cmd := s.Form.Update(msg)
-	if s.Form.Done() {
-		return m.end(nil)
-	}
-	return cmd
+	return nil
 }
 
 func (m *stepModel) View() string {
@@ -199,33 +194,14 @@ func (m *stepModel) View() string {
 		view, _ := leaveView(s.Leave, m.quit.Cursor(), width, m.height)
 		return view
 	}
-	var view string
-	if s.List != nil {
-		view = s.List.view(width)
-	} else {
-		view = s.Form.View()
-		if s.Hint != "" {
-			view += "\n\n" + dim.Render(Wrap(s.Hint, width))
-		}
-	}
+	var head []string
 	if s.Head != nil {
-		view = s.Head(width) + "\n\n" + view
+		head = append(strings.Split(s.Head(width), "\n"), "")
 	}
-	return view
-}
-
-// replay gives the screen what arrived for it under the leave question.
-func (m *stepModel) replay() tea.Cmd {
-	held := m.held
-	m.held = nil
-	var cmds []tea.Cmd
-	for _, msg := range held {
-		if m.done {
-			break
-		}
-		cmds = append(cmds, m.Update(msg))
+	if s.Form != nil {
+		return s.Form.draw(width).view(head, m.height)
 	}
-	return tea.Batch(cmds...)
+	return s.choice().list().draw(width).view(head, m.height)
 }
 
 // leaveView draws the leave question like the screens around it, in at
@@ -234,23 +210,15 @@ func (m *stepModel) replay() tea.Cmd {
 // options do not fit, it asks to enlarge the terminal instead and reports
 // that the question is not shown, so it must not be answered.
 func leaveView(cfg LeaveConfig, cursor, width, height int) (string, bool) {
-	l := leaveList(cfg, cursor)
-	view := l.view(width)
-	lines := strings.Split(view, "\n")
+	r := leaveList(cfg, cursor).draw(width)
+	lines := slices.Concat(r.above, r.items, r.below)
 	if height <= 0 || len(lines) <= height {
-		return view, true
+		return strings.Join(lines, "\n"), true
 	}
-	// Above the options are the title, the body and a blank row; below
-	// them a blank row and the hint.
-	from := len(strings.Split(bold.Render(Wrap(l.Title, width)), "\n")) + 1
-	if l.Body != nil {
-		from += len(strings.Split(l.Body(width), "\n"))
-	}
-	to := len(lines) - 1 - len(strings.Split(dim.Render(Wrap(l.Hint, width)), "\n"))
-	if to-from > height {
+	if len(r.items) > height {
 		return ansi.Truncate("Ctrl+C exits. Enlarge to answer.", width, "…"), false
 	}
-	start := min(len(lines)-height, from)
+	start := min(len(lines)-height, len(r.above))
 	return strings.Join(lines[start:start+height], "\n"), true
 }
 
@@ -264,16 +232,16 @@ func screenWidth(terminal int) int {
 }
 
 // leaveList draws the leave question like the screens around it.
-func leaveList(cfg LeaveConfig, cursor int) *List {
+func leaveList(cfg LeaveConfig, cursor int) optionList {
 	cfg = NewLeave(cfg).cfg
-	l := &List{
-		Title:   cfg.Title,
-		Options: []string{cfg.StayLabel, cfg.LeaveLabel},
-		Cursor:  cursor,
-		Hint:    leaveHint(cfg),
+	l := optionList{
+		title:   cfg.Title,
+		options: []string{cfg.StayLabel, cfg.LeaveLabel},
+		cursor:  cursor,
+		hint:    leaveHint(cfg),
 	}
 	if cfg.Body != "" {
-		l.Body = func(width int) string { return Wrap(cfg.Body, width) }
+		l.body = func(width int) string { return Wrap(cfg.Body, width) }
 	}
 	return l
 }
