@@ -102,7 +102,8 @@ func AltScreen(ctx context.Context, out io.Writer, flow func(context.Context) er
 		close(h.ended)
 	}()
 	stop := sync.OnceFunc(func() {
-		h.p.Quit()
+		// Program.Quit does nothing before Run has started; Send waits.
+		h.p.Send(tea.Quit())
 		<-h.ended
 	})
 	// Restore the terminal before a panic in flow reaches the caller.

@@ -2,7 +2,9 @@ package teakit
 
 import (
 	"context"
+	"errors"
 	"io"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -95,5 +97,20 @@ func TestLeaveQuestionHoldsTheScreen(t *testing.T) {
 	err := (&Step{Form: form, Unsaved: true}).Run(context.Background(), tea.WithInput(in), tea.WithOutput(io.Discard), tea.WithFilter(watch))
 	if err != ErrLeave {
 		t.Fatalf("got %v, want ErrLeave from the leave answer", err)
+	}
+}
+
+// TestFlowEndsWithoutScreen catches an AltScreen that stops its program with
+// Program.Quit, which does nothing before Run has started, so a flow that
+// ends before showing a screen waits until the context ends.
+func TestFlowEndsWithoutScreen(t *testing.T) {
+	// One thread lets the flow end before the program's goroutine starts.
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	early := errors.New("invalid settings")
+	err := AltScreen(ctx, io.Discard, func(context.Context) error { return early }, tea.WithInput(nil), tea.WithWindowSize(40, 10))
+	if err != early || ctx.Err() != nil {
+		t.Fatalf("got %v with the context at %v, want the flow's error at once", err, ctx.Err())
 	}
 }

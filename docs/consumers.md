@@ -1,6 +1,6 @@
 # Using and updating teakit
 
-Add teakit to the Go module that builds your terminal UI. Its module path is `github.com/undervoke/teakit`; the first release targets Go 1.25.0 and Bubble Tea v2.0.2. It does not require huh. Go keeps a higher Bubble Tea version if another dependency in your build requires one.
+Add teakit to the Go module that builds your terminal UI. Its module path is `github.com/undervoke/teakit`; it requires Go 1.26.0 and Bubble Tea v2.1.2, and does not require huh. Go keeps a higher Bubble Tea version if another dependency in your build requires one.
 
 ## Adopt the leave question
 
