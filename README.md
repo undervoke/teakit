@@ -2,7 +2,14 @@
 
 Bubble Tea components with one set of key conventions, shared by my terminal tools. It is built for my own projects: the API may change at any time, and versions stay at v0.
 
-Start with the **leave question**: embed it in a full-screen model or run it as an inline wizard step. A wizard that runs each screen as its own program can run its questions, forms, and waits through the **step runner**, optionally on the alternate screen so the shell's earlier text stays hidden. See [using and updating teakit](docs/consumers.md) for integration, version selection, and update PRs. Try the [example](examples/leave/main.go) from a checkout with `go run ./examples/leave`. The [diff example](examples/diff/main.go) runs an override review as an inline step with `go run ./examples/diff`.
+Start with the **leave question**: embed it in a full-screen model or run it as an inline wizard step. A wizard that runs each screen as its own program can run its questions, forms, and waits through the **step runner**, optionally on the alternate screen so the shell's earlier text stays hidden. See [using and updating teakit](docs/consumers.md) for integration, version selection, and update PRs.
+
+Try every component and see the code behind it. Name a component, such as `select`, to go straight to it.
+
+```sh
+go run github.com/undervoke/teakit/cmd/demo-tui@latest   # the latest release
+go tool demo-tui                                         # this checkout
+```
 
 Tagged versions, migration notes, and CI-built source archives are on [GitHub Releases](https://github.com/undervoke/teakit/releases). Maintainers: [cutting a release](docs/releasing.md).
 

@@ -1,17 +1,16 @@
-// Command diff runs an override review as an inline step: it shows what
-// applying would change and answers only Enter on the complete diff.
 package main
 
 import (
 	"context"
-	"fmt"
-	"os"
+	_ "embed"
 
-	tea "charm.land/bubbletea/v2"
 	"github.com/undervoke/teakit"
 )
 
-func main() {
+//go:embed diff.go
+var diffSource string
+
+func demoDiff(ctx context.Context) (string, error) {
 	files := []teakit.DiffFile{
 		{
 			Path: "~/.claude/settings.json",
@@ -37,25 +36,22 @@ func main() {
 			},
 		},
 	}
-	d, err := teakit.ReviewDiff(context.Background(), teakit.DiffConfig{
+	d, err := teakit.ReviewDiff(ctx, teakit.DiffConfig{
 		Title:       "Review overrides",
 		Body:        "Applying replaces these existing values. Nothing changes until you press Enter.",
 		ApplyLabel:  "apply",
 		Acknowledge: "Discard the data listed above",
-	}, files, tea.WithOutput(os.Stderr))
+	}, files)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "diff:", err)
-		os.Exit(1)
+		return "", err
 	}
 	switch d {
 	case teakit.DiffInterrupt:
-		fmt.Println("interrupted; nothing was changed")
-		os.Exit(130)
+		return "interrupted", nil
 	case teakit.DiffConfirm:
-		fmt.Println("applying the overrides shown above")
+		return "apply", nil
 	case teakit.DiffBack:
-		fmt.Println("back; nothing was changed")
-	default:
-		fmt.Println("cancelled; nothing was changed")
+		return "back", nil
 	}
+	return "cancelled", nil
 }

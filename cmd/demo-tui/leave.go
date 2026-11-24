@@ -1,16 +1,17 @@
-// Command leave runs a generic leave question as an inline step.
 package main
 
 import (
 	"context"
-	"fmt"
-	"os"
+	_ "embed"
 
 	"github.com/undervoke/teakit"
 )
 
-func main() {
-	d, err := teakit.AskLeave(context.Background(), teakit.LeaveConfig{
+//go:embed leave.go
+var leaveSource string
+
+func demoLeave(ctx context.Context) (string, error) {
+	d, err := teakit.AskLeave(ctx, teakit.LeaveConfig{
 		Title:      "Leave this screen?",
 		Body:       "Unanswered input will be lost.",
 		StayLabel:  "Stay",
@@ -19,16 +20,13 @@ func main() {
 		LeaveKeys:  []string{"y"},
 	})
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "leave:", err)
-		os.Exit(1)
+		return "", err
 	}
 	switch d {
 	case teakit.Interrupt:
-		fmt.Println("interrupted; leaving")
-		os.Exit(130)
+		return "interrupted", nil
 	case teakit.Leave:
-		fmt.Println("leaving")
-	default:
-		fmt.Println("staying")
+		return "leave", nil
 	}
+	return "stay", nil
 }
