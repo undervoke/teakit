@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	_ "embed"
+	"strings"
 
 	"github.com/undervoke/teakit"
 )
@@ -11,47 +12,42 @@ import (
 var diffSource string
 
 func demoDiff(ctx context.Context) (string, error) {
-	files := []teakit.DiffFile{
-		{
-			Path: "~/.claude/settings.json",
-			Sections: []teakit.DiffSection{
-				{
-					Label: "/statusLine",
-					Notes: []string{"replaces a value this tool did not write"},
-					Ops: []teakit.DiffOp{
-						{Kind: teakit.OpEqual, Text: "{"},
-						{Kind: teakit.OpDelete, Text: `  "command": "ccstatusline",`},
-						{Kind: teakit.OpInsert, Text: `  "command": "coa statusline --compact",`},
-						{Kind: teakit.OpEqual, Text: `  "type": "command"`},
-						{Kind: teakit.OpEqual, Text: "}"},
-					},
-				},
-				{
-					Label:        "/experimental",
-					BeforeAbsent: true,
-					Ops: []teakit.DiffOp{
-						{Kind: teakit.OpInsert, Text: `"experimental": true`},
-					},
-				},
-			},
-		},
+	pick := &teakit.Select{
+		Title: "Which changes?",
+		Hint:  "↑/↓ move · enter choose · shift+tab back · esc leave",
 	}
-	d, err := teakit.ReviewDiff(ctx, teakit.DiffConfig{
-		Title:       "Review overrides",
-		Body:        "Applying replaces these existing values. Nothing changes until you press Enter.",
-		ApplyLabel:  "apply",
-		Acknowledge: "Discard the data listed above",
-	}, files)
-	if err != nil {
+	for _, e := range diffExamples {
+		pick.Options = append(pick.Options, e.name)
+	}
+	if err := (&teakit.Step{Select: pick, Back: true}).Run(ctx); err != nil {
 		return "", err
 	}
-	switch d {
-	case teakit.DiffInterrupt:
-		return "interrupted", nil
-	case teakit.DiffConfirm:
-		return "apply", nil
-	case teakit.DiffBack:
-		return "back", nil
+	e := diffExamples[pick.Cursor]
+	f := &teakit.Form{
+		Title: e.title,
+		Hint:  "↑/↓ move · enter open or submit · shift+tab back · esc leave",
 	}
-	return "cancelled", nil
+	for _, file := range e.files {
+		f.Fields = append(f.Fields, &teakit.DiffField{
+			Files:      []teakit.DiffFile{file},
+			ApplyLabel: e.apply,
+			SkipLabel:  e.skip,
+			Accept:     e.accept,
+			Hint:       "enter apply · ↑/↓ scroll, then next · backspace skip · esc close",
+		})
+	}
+	if len(f.Fields) == 1 {
+		f.Hint = "enter apply · ↑/↓ scroll · shift+tab back"
+		f.Fields[0].(*teakit.DiffField).Hint = f.Hint
+	}
+	if err := (&teakit.Step{Form: f, Back: true}).Run(ctx); err != nil {
+		return "", err
+	}
+	var applied []string
+	for i, field := range f.Fields {
+		if field.(*teakit.DiffField).Apply {
+			applied = append(applied, e.files[i].Path)
+		}
+	}
+	return "applied " + strings.Join(applied, ", "), nil
 }

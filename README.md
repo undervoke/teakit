@@ -21,9 +21,8 @@ teakit fixes what must behave the same in every tool, and each tool supplies wha
 |---|---|
 | The key meanings below | Keys it adds to cancel, such as `q`, and keys of its own |
 | The leave question's answers, highlighted option, and default view | When to ask (always, or only with unsaved changes), the question's wording, and its layout, styles, and key hints in the tool |
-| The diff view's layout, key meanings, and confirmation guards | The diff's content and wording, whether a second answer sits beside Enter and on which key, when cancelling asks first, whether Back exists, and whether an extra acknowledgement gates the answers |
-| The static scrollback render left after a confirmed inline diff | Whether the host prints its own summary on top of it |
-| Questions with numbered options that take one option (`Select`) or any number of them (`MultiSelect`), forms (`Form`) of text and single-choice fields, all of which scroll on a short terminal; cancellable waits; and text wrapping | What its screens show, and which answers it accepts |
+| A diff's layout, as a form's field whose answer is to apply or skip it, and as text to print | The diff's content, the names of the two answers, and whether one of them is rejected |
+| Questions with numbered options that take one option (`Select`) or any number of them (`MultiSelect`), forms (`Form`) of text, single-choice and diff fields, all of which scroll on a short terminal; cancellable waits; and text wrapping | What its screens show, and which answers it accepts |
 | An input, in a select or a form: sized to its text, with its placeholder only until there is text, the unit as a fixed suffix, and without a unit the user types after the number | The unit, the placeholder, validation, and the form in which it stores the value |
 | The roles a text can have (`Header`, `Subhead`, `Focus`, `Chosen`, `Muted`, `Success`, `Warning`, `Error`), each one's look, and the role of each part of its screens | Which of its own words have a role |
 | When a form checks its fields: each when the user locks it, and all of them on submit | The check, which may read the other fields |
@@ -35,11 +34,13 @@ A behavior becomes a tool-supplied setting only when two tools actually need it 
 
 | Key | Meaning |
 |---|---|
-| Up/Down, k/j | Move between options, wrapping around at both ends; scroll the diff one row. Only Up/Down in a select's input |
+| Up/Down, k/j | Move between options, wrapping around at both ends. Only Up/Down in a select's input |
 | Up/Down in a form | Move between the fields and the Submit row, stopping at both ends; inside an open select field, move between its options |
-| PgUp/PgDn, Home/End, g/G | Scroll the diff a page; top/bottom (diff only, `]`/`[` jump between sections) |
-| Enter | Choose the highlighted option, or answer a multi-select with the checked ones; on a complete, visible, armed diff, confirm it |
-| Enter in a form | Open the field at the cursor; lock an open field's answer and open the next field; submit from the Submit row. A form of one field stays open, and Enter locks and submits it |
+| Up/Down, k/j in an open diff | Scroll it one row; past its ends, go on to the neighboring field without changing the answer, and open it when it is a diff too |
+| PgUp/PgDn, Home/End, g/G in an open diff | Scroll it a page; to its top or bottom |
+| Enter | Choose the highlighted option, or answer a multi-select with the checked ones |
+| Enter in a form | Open the field at the cursor; lock an open field's answer and open the next field; submit from the Submit row. A form of one field stays open, and Enter locks and submits it. An open diff's answer is to apply it. A held key neither applies a diff nor submits |
+| Backspace in an open diff | Skip it after all |
 | Typing, or a number, in a form | Open the text field, or the select field, at the cursor; the number also locks its option |
 | Space | Check or uncheck the option at the cursor of a multi-select |
 | A number | Choose that option; with more than nine options, a digit waits for a second digit or Enter. The number of a select's input, and any number in a multi-select, moves there instead |
@@ -47,9 +48,6 @@ A behavior becomes a tool-supplied setting only when two tools actually need it 
 | Esc in a form | Undo the open field's change and close it; with none open, ask the leave question |
 | Esc in a select's input or a form of one field | Return to the previous screen; with none, the same as on a choice screen or in a form |
 | Esc on the leave question | Confirm leaving immediately |
-| Esc in the diff view | Cancel; asks the configured leave question first when the tool set one |
-| The tool's second answer key in the diff view | Choose that answer under the same conditions as Enter; the diff's own keys win over it |
-| y / n in the diff view | Arm / disarm the extra acknowledgement, when the tool configured one; neither Enter nor the second answer key acts while it is unarmed |
 | Esc during a wait | Cancel the wait; the tool decides what follows |
 | Tab | In a form, move to the next field; from an open field, the same as Enter |
 | Shift+Tab | Return to the previous screen; in a form, move to the previous field until the first |

@@ -3,6 +3,7 @@ package teakit
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -65,5 +66,68 @@ func TestScrolledScreenShowsCursor(t *testing.T) {
 			form.start()
 			press(t, &Step{Form: form}, height, key, func() string { return "❯ " }, func(string) {})
 		}
+	}
+}
+
+// TestDiffScrollShowsEveryLine catches the form drawing a scrolled diff in
+// other rows than the diff counts on, so that it goes on to the next field
+// with lines never shown, or draws more rows than the terminal has. Delete it
+// with rows.scrolled.
+func TestDiffScrollShowsEveryLine(t *testing.T) {
+	const lines = 25
+	var ops []DiffOp
+	for i := range lines {
+		ops = append(ops, DiffOp{Kind: OpInsert, Text: fmt.Sprintf("line %02d.", i+1)})
+	}
+	diff := &DiffField{Files: []DiffFile{{Path: "file", Sections: []DiffSection{{Label: "part", Ops: ops}}}}}
+	for height := 1; height <= lines+12; height++ {
+		for _, fields := range [][]Field{{diff}, {diff, &InputField{Title: "Name"}}, {&InputField{Title: "Name"}, diff}} {
+			form := &Form{Title: "Review", Hint: "hint", Fields: fields}
+			m := NewStepModel(&Step{Form: form, Head: func(int) string { return "head" }})
+			m.Update(tea.WindowSizeMsg{Width: 40, Height: height})
+			if !form.single() {
+				form.move(slices.Index(fields, Field(diff)))
+				form.enter()
+			}
+			seen := map[string]bool{}
+			for range lines + 5 {
+				if !form.open {
+					break
+				}
+				view := ansi.Strip(m.View())
+				if rows := strings.Count(view, "\n") + 1; rows > height {
+					t.Fatalf("%d rows for height %d in:\n%s", rows, height, view)
+				}
+				for _, line := range regexp.MustCompile(`line \d\d\.`).FindAllString(view, -1) {
+					seen[line] = true
+				}
+				m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+			}
+			if len(seen) != lines {
+				t.Fatalf("%d of %d lines shown for height %d among %d fields", len(seen), lines, height, len(fields))
+			}
+		}
+	}
+}
+
+// TestHeldEnterAppliesOneDiff catches a key path that loses IsRepeat, so that
+// holding Enter applies diffs the user has not seen, and submits them. Delete
+// it with DiffField.
+func TestHeldEnterAppliesOneDiff(t *testing.T) {
+	first, last := &DiffField{Files: diffTestFiles()}, &DiffField{Files: diffTestFiles()}
+	m := NewStepModel(&Step{Form: &Form{Fields: []Field{first, last}}})
+	press := func(held bool) {
+		m.Update(tea.KeyPressMsg{Code: tea.KeyEnter, IsRepeat: held})
+	}
+	press(false) // opens the first
+	press(false)
+	press(true)
+	if !first.Apply || last.Apply {
+		t.Fatalf("applied %t and %t", first.Apply, last.Apply)
+	}
+	press(false)
+	press(true)
+	if m.Done() {
+		t.Fatal("submitted")
 	}
 }

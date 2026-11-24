@@ -175,10 +175,32 @@ func (m *StepModel) Update(msg tea.Msg) tea.Cmd {
 	case s.Select != nil && s.Select.typing():
 		return s.Select.Input.edit(msg)
 	case s.Form != nil:
-		_, cmd := s.Form.update(msg)
-		return cmd
+		return m.fill(msg)
 	}
 	return nil
+}
+
+// fill passes msg to the form.
+func (m *StepModel) fill(msg tea.Msg) tea.Cmd {
+	f := m.s.Form
+	drawn, by := f.draw(screenWidth(m.width)), scroll{}
+	if m.height > 0 {
+		_, _, room := drawn.fit(len(m.head()), m.height)
+		by = drawn.scroll(room)
+	}
+	submitted, cmd := f.update(msg, by)
+	if submitted {
+		return m.end(nil)
+	}
+	return cmd
+}
+
+// head returns the rows above the screen.
+func (m *StepModel) head() []string {
+	if m.s.Head == nil {
+		return nil
+	}
+	return append(strings.Split(m.s.Head(screenWidth(m.width)), "\n"), "")
 }
 
 func (m *StepModel) press(msg tea.KeyPressMsg) tea.Cmd {
@@ -206,7 +228,7 @@ func (m *StepModel) press(msg tea.KeyPressMsg) tea.Cmd {
 		key == "esc" && s.Back && (typing || s.Form != nil && s.Form.single()):
 		return m.end(ErrBack)
 	case key == "esc" && s.Form != nil && s.Form.editing():
-		s.Form.update(msg)
+		return m.fill(msg)
 	case key == "esc" && (s.Unsaved || s.Form != nil):
 		m.ask()
 	case key == "esc":
@@ -222,11 +244,7 @@ func (m *StepModel) press(msg tea.KeyPressMsg) tea.Cmd {
 			return m.end(nil)
 		}
 	case s.Form != nil:
-		submitted, cmd := s.Form.update(msg)
-		if submitted {
-			return m.end(nil)
-		}
-		return cmd
+		return m.fill(msg)
 	}
 	return nil
 }
@@ -239,14 +257,10 @@ func (m *StepModel) View() string {
 		view, _ := leaveView(s.leave(), m.quit.Cursor(), width, m.height)
 		return view
 	}
-	var head []string
-	if s.Head != nil {
-		head = append(strings.Split(s.Head(width), "\n"), "")
-	}
 	if s.Form != nil {
-		return s.Form.draw(width).view(head, m.height)
+		return s.Form.draw(width).view(m.head(), m.height)
 	}
-	return s.choice().list().draw(width).view(head, m.height)
+	return s.choice().list().draw(width).view(m.head(), m.height)
 }
 
 // leaveView draws the leave question like the screens around it, in at

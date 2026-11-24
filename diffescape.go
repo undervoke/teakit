@@ -1,5 +1,3 @@
-// Escape and measurement helpers for the diff view.
-// Escaped controls stay visible without reaching the terminal as raw input.
 package teakit
 
 import (
@@ -10,38 +8,26 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// SGR attributes used by the diff view. Colors are ANSI-16 foreground
-// indices, so the terminal's palette decides the shade.
+// SGR attributes of a diff. Colors are ANSI-16 foreground indices, so the
+// terminal's palette decides the shade.
 const (
-	diffSGRBold  = "1"
-	diffSGRFaint = "2"
-	diffSGRChar  = "3"
-	diffSGRRed   = "31"
-	diffSGRGreen = "32"
+	diffSGRBold   = "1"
+	diffSGRFaint  = "2"
+	diffSGRItalic = "3"
+	diffSGRRed    = "31"
+	diffSGRGreen  = "32"
 )
 
-// diffStyle wraps nonempty text in SGR without styling blank cells.
+// diffStyle wraps nonempty text in SGR, unless code is empty.
 func diffStyle(code, s string) string {
-	if s == "" {
-		return ""
+	if s == "" || code == "" {
+		return s
 	}
 	return "\x1b[" + code + "m" + s + "\x1b[0m"
 }
 
-// diffWidth measures visible terminal cells, ignoring SGR sequences.
-func diffWidth(s string) int { return ansi.StringWidth(s) }
-
-// diffPadRight pads to width cells without truncating wider text.
-func diffPadRight(s string, width int) string {
-	return s + strings.Repeat(" ", max(0, width-diffWidth(s)))
-}
-
-// diffPadLeft pads to width cells without truncating wider text.
-func diffPadLeft(s string, width int) string {
-	return strings.Repeat(" ", max(0, width-diffWidth(s))) + s
-}
-
-// An atom is a whole grapheme or a visible, reverse-highlighted escape. Keep
+// An atom is a whole grapheme, or a control that is visible as an escape
+// instead of reaching the terminal, highlighted in reverse. Keep
 // escapes atomic without reparsing SGR; reverse-off preserves outer colors.
 type diffAtom struct {
 	text  string

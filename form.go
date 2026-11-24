@@ -1,7 +1,9 @@
 package teakit
 
 import (
+	"cmp"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -32,7 +34,7 @@ type Form struct {
 	open bool
 }
 
-// Field is a field of a Form: an InputField or a SelectField.
+// Field is a field of a Form: an InputField, a SelectField or a DiffField.
 type Field interface {
 	// start readies the field for a new showing.
 	start()
@@ -42,9 +44,8 @@ type Field interface {
 	open()
 	shut()
 	resize(width int)
-	// update handles a message while the field is open, and reports whether
-	// it also locks the answer.
-	update(msg tea.Msg) (bool, tea.Cmd)
+	// update handles a message while the field is open and scrolls as by says.
+	update(msg tea.Msg, by scroll) (fieldEnd, tea.Cmd)
 	// lock takes the answer unless it is rejected.
 	lock() bool
 	// undo puts back the answer the field had when it was opened.
@@ -61,6 +62,17 @@ const (
 	fieldAway fieldState = iota // the cursor is elsewhere
 	fieldHere                   // the cursor is on the field
 	fieldOpen                   // the cursor is inside it
+	fieldOnly                   // it is the form's one field, which stays open
+)
+
+// fieldEnd is what a message does to an open field.
+type fieldEnd int
+
+const (
+	fieldStays fieldEnd = iota
+	fieldLocks          // locks its answer
+	fieldUp             // goes on to the field above
+	fieldDown           // goes on to the field below
 )
 
 // single reports that the form is one field, which stays open.
@@ -100,14 +112,15 @@ func (f *Form) move(to int) {
 	f.at = min(max(to, 0), len(f.Fields))
 }
 
-// update handles a message and reports whether the form was submitted.
-func (f *Form) update(msg tea.Msg) (bool, tea.Cmd) {
-	key := ""
+// update handles a message while an open field scrolls as by says, and reports
+// whether the form was submitted.
+func (f *Form) update(msg tea.Msg, by scroll) (bool, tea.Cmd) {
+	key, held := "", false
 	if m, ok := msg.(tea.KeyPressMsg); ok {
-		key = m.String()
+		key, held = m.String(), m.Key().IsRepeat
 	}
 	if f.open {
-		return f.updateOpen(key, msg)
+		return f.updateOpen(key, held, msg, by)
 	}
 	switch key {
 	case "up", "shift+tab":
@@ -116,34 +129,41 @@ func (f *Form) update(msg tea.Msg) (bool, tea.Cmd) {
 		f.move(f.at + 1)
 	case "enter":
 		if f.at == len(f.Fields) {
-			return f.submit(), nil
+			// A held key that applied the last diff must not submit it.
+			return !held && f.submit(), nil
 		}
 		f.enter()
 	default:
 		if f.at < len(f.Fields) && f.Fields[f.at].opens(msg) {
 			f.enter()
-			return f.updateOpen(key, msg)
+			return f.updateOpen(key, held, msg, by)
 		}
 	}
 	return false, nil
 }
 
-func (f *Form) updateOpen(key string, msg tea.Msg) (bool, tea.Cmd) {
+func (f *Form) updateOpen(key string, held bool, msg tea.Msg, by scroll) (bool, tea.Cmd) {
 	field := f.Fields[f.at]
-	locks := key == "enter" || key == "tab"
+	diff, _ := field.(*DiffField)
+	end := fieldStays
 	var cmd tea.Cmd
 	switch {
 	case f.single() && (key == "tab" || key == "shift+tab"):
-		return false, nil
+	case key == "enter", key == "tab":
+		// A held key must not apply one diff after another.
+		if diff == nil || !held {
+			end = fieldLocks
+		}
 	case key == "shift+tab":
 		f.move(f.at - 1)
 	case key == "esc":
 		field.undo()
 		f.move(f.at)
-	case !locks:
-		locks, cmd = field.update(msg)
+	default:
+		end, cmd = field.update(msg, by)
 	}
-	if locks && field.lock() {
+	switch {
+	case end == fieldLocks && field.lock():
 		if f.single() {
 			return true, cmd
 		}
@@ -151,8 +171,26 @@ func (f *Form) updateOpen(key string, msg tea.Msg) (bool, tea.Cmd) {
 		if f.at < len(f.Fields) {
 			f.enter()
 		}
+	case end == fieldUp && f.at > 0:
+		f.read(f.at - 1)
+		if above, ok := f.Fields[f.at].(*DiffField); ok {
+			above.offset = math.MaxInt // its end
+		}
+	case end == fieldDown && !f.single():
+		f.read(f.at + 1)
 	}
 	return false, cmd
+}
+
+// read moves the cursor to the field or row at to, and opens a diff there, so
+// that one diff after another scrolls by.
+func (f *Form) read(to int) {
+	f.move(to)
+	if f.at < len(f.Fields) {
+		if _, ok := f.Fields[f.at].(*DiffField); ok {
+			f.enter()
+		}
+	}
 }
 
 // submit checks every answer again, since one can be rejected for what
@@ -190,6 +228,8 @@ func (f *Form) draw(width int) rows {
 	for i, field := range f.Fields {
 		state := fieldAway
 		switch {
+		case f.single():
+			state = fieldOnly
 		case i == f.at && f.open:
 			state = fieldOpen
 		case i == f.at:
@@ -197,6 +237,9 @@ func (f *Form) draw(width int) rows {
 		}
 		item, cursor := field.draw(width, state)
 		add(i, item, cursor)
+		if diff, ok := field.(*DiffField); ok && i == f.at && f.open {
+			r.scrolls, r.pinned, r.offset = true, len(item)-len(diff.changes), diff.offset
+		}
 	}
 	if n := len(f.Fields); !f.single() {
 		submit := "  Submit"
@@ -206,8 +249,11 @@ func (f *Form) draw(width int) rows {
 		add(n, []string{submit}, 0)
 	}
 	hint := f.Hint
-	if f.open && f.OpenHint != "" {
-		hint = f.OpenHint
+	if f.open {
+		hint = cmp.Or(f.OpenHint, hint)
+		if diff, ok := f.Fields[f.at].(*DiffField); ok {
+			hint = cmp.Or(diff.Hint, hint)
+		}
 	}
 	if hint != "" {
 		r.below = append([]string{""}, strings.Split(Muted.Render(Wrap(hint, width)), "\n")...)
@@ -305,13 +351,13 @@ func (f *InputField) resize(width int) {
 	f.fit()
 }
 
-func (f *InputField) update(msg tea.Msg) (bool, tea.Cmd) {
+func (f *InputField) update(msg tea.Msg, _ scroll) (fieldEnd, tea.Cmd) {
 	before := f.Value
 	cmd := f.edit(msg)
 	if f.Value != before {
 		f.remark()
 	}
-	return false, cmd
+	return fieldStays, cmd
 }
 
 func (f *InputField) lock() bool { return f.check() }
@@ -322,7 +368,7 @@ func (f *InputField) draw(width int, state fieldState) ([]string, int) {
 	rows := drawField(f.Title, "", width, state)
 	cursor := 0
 	switch {
-	case state == fieldOpen:
+	case state == fieldOpen, state == fieldOnly:
 		cursor = len(rows)
 		rows = append(rows, Focus.Render("  ❯ ")+f.view())
 	case f.Value == "":
@@ -373,9 +419,12 @@ func (f *SelectField) opens(msg tea.Msg) bool {
 	return ok && len(m.String()) == 1 && m.String() >= "1" && m.String() <= "9"
 }
 
-func (f *SelectField) update(msg tea.Msg) (bool, tea.Cmd) {
+func (f *SelectField) update(msg tea.Msg, _ scroll) (fieldEnd, tea.Cmd) {
 	m, ok := msg.(tea.KeyPressMsg)
-	return ok && moveKey(m.String(), &f.at, &f.digit, len(f.Options)), nil
+	if ok && moveKey(m.String(), &f.at, &f.digit, len(f.Options)) {
+		return fieldLocks, nil
+	}
+	return fieldStays, nil
 }
 
 func (f *SelectField) lock() bool {
@@ -393,13 +442,14 @@ func (f *SelectField) accepted() bool {
 func (f *SelectField) draw(width int, state fieldState) ([]string, int) {
 	rows := drawField(f.Title, f.Help, width, state)
 	cursor := 0
+	open := state == fieldOpen || state == fieldOnly
 	digits := len(strconv.Itoa(len(f.Options)))
 	for i, option := range f.Options {
 		marker := "    "
 		switch {
-		case state == fieldOpen && i == f.at:
+		case open && i == f.at:
 			cursor, marker = len(rows), "  ❯ "
-		case state != fieldOpen && i == f.Choice:
+		case !open && i == f.Choice:
 			marker = "  > "
 		}
 		drawn := indented(fmt.Sprintf("%s%*d. ", marker, digits, i+1), option, width)
