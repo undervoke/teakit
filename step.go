@@ -173,8 +173,10 @@ func (m *stepModel) press(msg tea.KeyPressMsg) tea.Cmd {
 			return m.end(ErrLeave)
 		}
 	case key == "shift+tab" && s.Back && (s.Form == nil || s.Form.at == 0),
-		key == "esc" && s.Back && (typing || s.Form != nil && len(s.Form.Fields) == 1):
+		key == "esc" && s.Back && (typing || s.Form != nil && s.Form.single()):
 		return m.end(ErrBack)
+	case key == "esc" && s.Form != nil && s.Form.editing():
+		s.Form.update(msg)
 	case key == "esc" && (s.Unsaved || s.Form != nil):
 		m.ask()
 	case key == "esc":

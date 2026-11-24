@@ -1,6 +1,8 @@
 package teakit
 
 import (
+	"fmt"
+	"strconv"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -8,11 +10,14 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// Form is a screen of fields, filled in one at a time. Enter or tab moves to
-// the next field once the current one's answer is accepted, shift+tab moves
-// to the previous one, and enter on the last field submits the form. Run it
-// with Step; after the step, each field holds its answer. Fields that do not
-// fit the terminal scroll with the cursor.
+// Form is a screen of fields above a Submit row. Up and down, or shift+tab and
+// tab, move between them. Enter opens the field at the cursor, as typing does
+// for an InputField and a number for a SelectField. In an open field, enter or
+// tab locks an accepted answer and opens the next field, and esc undoes what
+// was changed and shuts it. Submitting checks every answer. A form of one
+// field keeps it open and has no Submit row: enter locks and submits it. Run
+// it with Step; after the step, each field holds its answer. Fields that do
+// not fit the terminal scroll with the cursor.
 type Form struct {
 	// Title is shown above the fields; empty for none.
 	Title string
@@ -20,29 +25,57 @@ type Form struct {
 	Body   func(width int) string
 	Fields []Field
 	Hint   string
+	// OpenHint replaces Hint while a field is open.
+	OpenHint string
 
-	at int // the field that has the keys
+	at   int // the field at the cursor, or len(Fields) for the Submit row
+	open bool
 }
 
 // Field is a field of a Form: an InputField or a SelectField.
 type Field interface {
 	// start readies the field for a new showing.
 	start()
-	// focus gives the field the keys, or takes them away.
-	focus(on bool)
+	// opens reports whether msg opens the field, which then handles it.
+	opens(msg tea.Msg) bool
+	// open gives the field the keys, and shut takes them away.
+	open()
+	shut()
 	resize(width int)
-	update(msg tea.Msg) tea.Cmd
+	// update handles a message while the field is open, and reports whether
+	// it also locks the answer.
+	update(msg tea.Msg) (bool, tea.Cmd)
+	// lock takes the answer unless it is rejected.
+	lock() bool
+	// undo puts back the answer the field had when it was opened.
+	undo()
 	// accepted checks the answer and keeps why it was rejected.
 	accepted() bool
 	// draw returns the field's rows and which of them the cursor is on.
-	draw(width int, focused bool) (rows []string, cursor int)
+	draw(width int, state fieldState) (rows []string, cursor int)
 }
 
+type fieldState int
+
+const (
+	fieldAway fieldState = iota // the cursor is elsewhere
+	fieldHere                   // the cursor is on the field
+	fieldOpen                   // the cursor is inside it
+)
+
+// single reports that the form is one field, which stays open.
+func (f *Form) single() bool { return len(f.Fields) == 1 }
+
+// editing reports whether esc undoes the open field's change.
+func (f *Form) editing() bool { return f.open && !f.single() }
+
 func (f *Form) start() {
-	f.at = 0
-	for i, field := range f.Fields {
+	f.at, f.open = 0, false
+	for _, field := range f.Fields {
 		field.start()
-		field.focus(i == 0)
+	}
+	if f.single() {
+		f.enter()
 	}
 }
 
@@ -52,10 +85,19 @@ func (f *Form) resize(width int) {
 	}
 }
 
+// enter opens the field at the cursor.
+func (f *Form) enter() {
+	f.open = true
+	f.Fields[f.at].open()
+}
+
+// move shuts an open field and moves the cursor to the field or row at to.
 func (f *Form) move(to int) {
-	f.Fields[f.at].focus(false)
-	f.at = to
-	f.Fields[f.at].focus(true)
+	if f.open {
+		f.open = false
+		f.Fields[f.at].shut()
+	}
+	f.at = min(max(to, 0), len(f.Fields))
 }
 
 // update handles a message and reports whether the form was submitted.
@@ -64,24 +106,56 @@ func (f *Form) update(msg tea.Msg) (bool, tea.Cmd) {
 	if m, ok := msg.(tea.KeyPressMsg); ok {
 		key = m.String()
 	}
-	last := f.at >= len(f.Fields)-1
-	switch {
-	case key == "enter" && last:
-		return f.submit(), nil
-	case key == "tab" && last, key == "shift+tab" && f.at == 0, len(f.Fields) == 0:
-	case key == "enter", key == "tab":
-		if f.Fields[f.at].accepted() {
-			f.move(f.at + 1)
-		}
-	case key == "shift+tab":
+	if f.open {
+		return f.updateOpen(key, msg)
+	}
+	switch key {
+	case "up", "shift+tab":
 		f.move(f.at - 1)
+	case "down", "tab":
+		f.move(f.at + 1)
+	case "enter":
+		if f.at == len(f.Fields) {
+			return f.submit(), nil
+		}
+		f.enter()
 	default:
-		return false, f.Fields[f.at].update(msg)
+		if f.at < len(f.Fields) && f.Fields[f.at].opens(msg) {
+			f.enter()
+			return f.updateOpen(key, msg)
+		}
 	}
 	return false, nil
 }
 
-// submit checks every field again, since an answer can be rejected for what
+func (f *Form) updateOpen(key string, msg tea.Msg) (bool, tea.Cmd) {
+	field := f.Fields[f.at]
+	locks := key == "enter" || key == "tab"
+	var cmd tea.Cmd
+	switch {
+	case f.single() && (key == "tab" || key == "shift+tab"):
+		return false, nil
+	case key == "shift+tab":
+		f.move(f.at - 1)
+	case key == "esc":
+		field.undo()
+		f.move(f.at)
+	case !locks:
+		locks, cmd = field.update(msg)
+	}
+	if locks && field.lock() {
+		if f.single() {
+			return true, cmd
+		}
+		f.move(f.at + 1)
+		if f.at < len(f.Fields) {
+			f.enter()
+		}
+	}
+	return false, cmd
+}
+
+// submit checks every answer again, since one can be rejected for what
 // another field holds, and moves to the first rejected one.
 func (f *Form) submit() bool {
 	for i, field := range f.Fields {
@@ -104,33 +178,41 @@ func (f *Form) draw(width int) rows {
 	if len(r.above) > 0 {
 		r.above = append(r.above, "")
 	}
-	for i, field := range f.Fields {
+	add := func(i int, item []string, cursor int) {
 		if i > 0 {
 			r.items = append(r.items, "")
 		}
-		drawn, cursor := field.draw(width, i == f.at)
 		if i == f.at {
 			r.cursor, r.row = i, len(r.items)+cursor
 		}
-		r.add(drawn)
+		r.add(item)
 	}
-	if f.Hint != "" {
-		r.below = append([]string{""}, strings.Split(Muted.Render(Wrap(f.Hint, width)), "\n")...)
+	for i, field := range f.Fields {
+		state := fieldAway
+		switch {
+		case i == f.at && f.open:
+			state = fieldOpen
+		case i == f.at:
+			state = fieldHere
+		}
+		item, cursor := field.draw(width, state)
+		add(i, item, cursor)
+	}
+	if n := len(f.Fields); !f.single() {
+		submit := "  Submit"
+		if f.at == n {
+			submit = Focus.Render("❯ Submit")
+		}
+		add(n, []string{submit}, 0)
+	}
+	hint := f.Hint
+	if f.open && f.OpenHint != "" {
+		hint = f.OpenHint
+	}
+	if hint != "" {
+		r.below = append([]string{""}, strings.Split(Muted.Render(Wrap(hint, width)), "\n")...)
 	}
 	return r
-}
-
-// drawField draws what is above a field's answer.
-func drawField(title, help string, width int, focused bool) []string {
-	title = Subhead.Render(Wrap(title, width))
-	if focused {
-		title = Focus.Render(title)
-	}
-	rows := strings.Split(title, "\n")
-	if help != "" {
-		rows = append(rows, strings.Split(Muted.Render(Wrap(help, width)), "\n")...)
-	}
-	return rows
 }
 
 // indented wraps text that does not fit in what is left of width after prefix,
@@ -144,123 +226,187 @@ func indented(prefix, text string, width int) string {
 	return prefix + strings.ReplaceAll(text, "\n", "\n"+strings.Repeat(" ", indent))
 }
 
+// drawField draws what is above a field's answer.
+func drawField(title, help string, width int, state fieldState) []string {
+	marker, role := "  ", Subhead
+	if state != fieldAway {
+		role = Header
+	}
+	if state == fieldHere {
+		marker = "❯ "
+	}
+	rows := strings.Split(role.Render(indented(marker, title, width)), "\n")
+	if help != "" {
+		rows = append(rows, strings.Split(Muted.Render(indented("  ", help, width)), "\n")...)
+	}
+	return rows
+}
+
+// answerIndent is the column of a field's answer, after its marker.
+const answerIndent = 4
+
+// drawUnder draws what is said about a field's answer.
+func drawUnder(role Role, text string, width int) []string {
+	if text == "" {
+		return nil
+	}
+	return strings.Split(role.Render(indented(strings.Repeat(" ", answerIndent), text, width)), "\n")
+}
+
 // InputField is a Form's field for typing text.
 type InputField struct {
 	Title string
-	Help  string
-	// HelpFunc, when set, gives the help for the text typed so far, in place
-	// of Help.
-	HelpFunc func(text string) string
-	// Value is the text, which typing changes in place.
-	Value string
-	// Accept, when set, checks the text when the user moves on from it and
-	// when they submit the form. Its error is shown under the text until the
-	// next key.
-	Accept func(text string) error
+	Input
+	// Note, when set, remarks on the text as it stands, such as that it names
+	// no file yet; empty for nothing.
+	Note func(text string) string
 
-	text typedText
-	help string // what HelpFunc gave for Value
+	note   string // what Note gave for Value
+	before string // Value when the field was opened
 }
 
 func (f *InputField) start() {
-	f.text = newTypedText(f.Value, "")
-	f.typed()
+	f.Input.start()
+	f.remark()
 }
 
-// typed takes the text as it now stands.
-func (f *InputField) typed() {
-	f.Value = f.text.Value()
-	f.help = f.Help
-	if f.HelpFunc != nil {
-		f.help = f.HelpFunc(f.Value)
+func (f *InputField) remark() {
+	if f.Note != nil {
+		f.note = f.Note(f.Value)
 	}
 }
 
-func (f *InputField) focus(on bool) {
-	if on {
-		f.text.Focus()
-	} else {
-		f.text.Blur()
+func (f *InputField) opens(msg tea.Msg) bool {
+	switch msg := msg.(type) {
+	case tea.KeyPressMsg:
+		return msg.Key().Text != ""
+	case tea.PasteMsg:
+		return true
 	}
+	return false
+}
+
+func (f *InputField) open() {
+	f.before = f.Value
+	f.text.CursorEnd()
+	f.text.Focus()
+}
+
+func (f *InputField) shut() { f.text.Blur() }
+
+func (f *InputField) undo() {
+	f.Value = f.before
+	f.start()
 }
 
 func (f *InputField) resize(width int) {
-	// The marker takes two columns, and the cursor one past the text's end.
-	f.text.SetWidth(max(width-3, 1))
-	// Recompute the visible span for the new width, from the end, since
-	// textinput keeps a span that still holds the cursor.
-	at := f.text.Position()
-	f.text.CursorEnd()
-	f.text.SetCursor(at)
+	// The cursor takes one column past the text's end, before the unit.
+	f.room = max(width-answerIndent-1-ansi.StringWidth(f.Unit), 1)
+	f.fit()
 }
 
-func (f *InputField) update(msg tea.Msg) tea.Cmd {
-	cmd := f.text.edit(msg)
-	if f.text.Value() != f.Value {
-		f.typed()
+func (f *InputField) update(msg tea.Msg) (bool, tea.Cmd) {
+	before := f.Value
+	cmd := f.edit(msg)
+	if f.Value != before {
+		f.remark()
 	}
-	return cmd
+	return false, cmd
 }
 
-func (f *InputField) accepted() bool { return f.text.check(f.Accept, f.Value) }
+func (f *InputField) lock() bool { return f.check() }
 
-func (f *InputField) draw(width int, focused bool) ([]string, int) {
-	rows := drawField(f.Title, f.help, width, focused)
-	cursor := len(rows)
-	marker := "> "
-	if focused {
-		marker = Focus.Render("❯ ")
+func (f *InputField) accepted() bool { return f.check() }
+
+func (f *InputField) draw(width int, state fieldState) ([]string, int) {
+	rows := drawField(f.Title, "", width, state)
+	cursor := 0
+	switch {
+	case state == fieldOpen:
+		cursor = len(rows)
+		rows = append(rows, Focus.Render("  ❯ ")+f.view())
+	case f.Value == "":
+		rows = append(rows, "    "+f.view())
+	default:
+		rows = append(rows, f.answer())
 	}
-	rows = append(rows, marker+f.text.View())
-	if f.text.invalid != "" {
-		rows = append(rows, strings.Split(Error.Render(Wrap(f.text.invalid, width)), "\n")...)
-	}
-	return rows, cursor
+	rows = append(rows, drawUnder(Error, f.text.invalid, width)...)
+	return append(rows, drawUnder(Muted, f.note, width)...), cursor
 }
 
-// SelectField is a Form's field that takes one of its options. It shows all
-// of them while it has the keys, and otherwise the chosen one.
+// answer draws the text of a shut field.
+func (f *InputField) answer() string {
+	text := "  > " + ansi.Truncate(f.Value, f.room, "…")
+	if f.text.invalid == "" {
+		text = Chosen.Render(text)
+	}
+	if f.Unit != "" {
+		text += Muted.Render(" " + f.Unit)
+	}
+	return text
+}
+
+// SelectField is a Form's field that takes one of its numbered options. A
+// number also locks its option; with more than nine options, a digit waits for
+// a second digit or enter.
 type SelectField struct {
 	Title   string
 	Help    string
 	Options []string
-	// Cursor is the option chosen, which the arrow keys change in place.
-	Cursor int
+	// Choice is the option locked, or -1 for none yet, which the form does
+	// not submit.
+	Choice int
+
+	at      int    // the option at the cursor while the field is open
+	digit   string // the first digit of a two-digit option number
+	invalid string
 }
 
-func (f *SelectField) start()         {}
-func (f *SelectField) focus(bool)     {}
-func (f *SelectField) resize(int)     {}
-func (f *SelectField) accepted() bool { return true }
+func (f *SelectField) start()     { f.invalid = "" }
+func (f *SelectField) open()      { f.at, f.digit = max(f.Choice, 0), "" }
+func (f *SelectField) shut()      {}
+func (f *SelectField) undo()      {}
+func (f *SelectField) resize(int) {}
 
-func (f *SelectField) update(msg tea.Msg) tea.Cmd {
-	if m, ok := msg.(tea.KeyPressMsg); ok && len(f.Options) > 0 {
-		switch m.String() {
-		case "up", "k":
-			f.Cursor = Move(f.Cursor, -1, len(f.Options))
-		case "down", "j":
-			f.Cursor = Move(f.Cursor, 1, len(f.Options))
-		}
+func (f *SelectField) opens(msg tea.Msg) bool {
+	m, ok := msg.(tea.KeyPressMsg)
+	return ok && len(m.String()) == 1 && m.String() >= "1" && m.String() <= "9"
+}
+
+func (f *SelectField) update(msg tea.Msg) (bool, tea.Cmd) {
+	m, ok := msg.(tea.KeyPressMsg)
+	return ok && moveKey(m.String(), &f.at, &f.digit, len(f.Options)), nil
+}
+
+func (f *SelectField) lock() bool {
+	f.Choice, f.invalid = f.at, ""
+	return true
+}
+
+func (f *SelectField) accepted() bool {
+	if f.Choice < 0 {
+		f.invalid = "Choose one."
 	}
-	return nil
+	return f.Choice >= 0
 }
 
-func (f *SelectField) draw(width int, focused bool) ([]string, int) {
-	rows := drawField(f.Title, f.Help, width, focused)
-	cursor := len(rows)
+func (f *SelectField) draw(width int, state fieldState) ([]string, int) {
+	rows := drawField(f.Title, f.Help, width, state)
+	cursor := 0
+	digits := len(strconv.Itoa(len(f.Options)))
 	for i, option := range f.Options {
+		marker := "    "
 		switch {
-		case i == f.Cursor && focused:
-			cursor = len(rows)
-			option = Focus.Render(indented("❯ ", option, width))
-		case i == f.Cursor:
-			option = Chosen.Render(indented("> ", option, width))
-		case focused:
-			option = indented("  ", option, width)
-		default:
-			continue
+		case state == fieldOpen && i == f.at:
+			cursor, marker = len(rows), "  ❯ "
+		case state != fieldOpen && i == f.Choice:
+			marker = "  > "
 		}
-		rows = append(rows, strings.Split(option, "\n")...)
+		drawn := indented(fmt.Sprintf("%s%*d. ", marker, digits, i+1), option, width)
+		if i == f.Choice {
+			drawn = Chosen.Render(drawn)
+		}
+		rows = append(rows, strings.Split(drawn, "\n")...)
 	}
-	return rows, cursor
+	return append(rows, drawUnder(Error, f.invalid, width)...), cursor
 }

@@ -28,13 +28,13 @@ func TestScrolledScreenShowsCursor(t *testing.T) {
 	for i := range items {
 		q.Options = append(q.Options, fmt.Sprint("option ", i+1))
 		if i%2 == 0 {
-			form.Fields = append(form.Fields, &InputField{Title: "Type", Help: "help"})
+			form.Fields = append(form.Fields, &InputField{Title: "Type"})
 		} else {
-			form.Fields = append(form.Fields, &SelectField{Title: "Choose", Options: []string{"a", "b", "c", "d"}, Cursor: 3})
+			form.Fields = append(form.Fields, &SelectField{Title: "Choose", Options: []string{"a", "b", "c", "d"}, Choice: 3})
 		}
 	}
 	q.Options[10] = long
-	form.Fields[10].(*InputField).Help = long
+	form.Fields[11].(*SelectField).Help = long
 	press := func(t *testing.T, s *Step, height int, key rune, cursor func() string, check func(view string)) {
 		s.Head = func(int) string { return "head" }
 		m := &stepModel{s: s}
@@ -60,7 +60,10 @@ func TestScrolledScreenShowsCursor(t *testing.T) {
 				t.Fatalf("%d of %d options shown or counted for height %d in:\n%s", counted, items, height, view)
 			}
 		})
-		form.start()
-		press(t, &Step{Form: form}, height, tea.KeyTab, func() string { return "❯ " }, func(string) {})
+		// Tab moves over the fields; enter opens and locks each.
+		for _, key := range []rune{tea.KeyTab, tea.KeyEnter} {
+			form.start()
+			press(t, &Step{Form: form}, height, key, func() string { return "❯ " }, func(string) {})
+		}
 	}
 }

@@ -48,7 +48,7 @@ For a wizard that runs each screen as its own program, `teakit.Step` runs one sc
 |---|---|
 | A question that takes one option | Run `&teakit.Step{Select: q, ...}`; after `nil`, `q.Cursor` is the option picked. For a value the options do not offer, set `q.Input = &teakit.Input{...}` with the unit, placeholder, and check, and read `q.Input.Value`, which never includes the unit. |
 | A question that takes any number of options | Run `&teakit.Step{MultiSelect: q, ...}`; `q.Checked`, one entry per option, changes in place, so it also keeps the choices of a user who goes back. |
-| A form | Run `&teakit.Step{Form: f, ...}` with `InputField`s and `SelectField`s in `f.Fields`; each `Value` or `Cursor` changes in place. An `Accept` that reads other fields is sound, since submitting runs every one again. |
+| A form | Run `&teakit.Step{Form: f, ...}` with `InputField`s, each holding the same `teakit.Input` a select takes, and `SelectField`s in `f.Fields`; each `Value` or `Choice` changes in place. Set `Choice` to -1 for a question with no answer yet, which the form does not submit. An `Accept` that reads other fields is sound, since submitting runs every one again. |
 | The leave question alone | Run a `Step` with no question or form, e.g. for an Exit row; `nil` means the user stayed. |
 | A wait | `teakit.Wait(ctx, view, work)` returns what `work` returns, `context.Canceled` on Esc, or `teakit.ErrLeave` on Ctrl+C. |
 

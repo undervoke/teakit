@@ -52,19 +52,21 @@ func (t *typedText) check(accept func(string) error, value string) bool {
 	return true
 }
 
-// Input is the typed answer that takes a Select's last option. Its unit
+// Input is a typed answer: a Select's last option, or an InputField. Its unit
 // follows the text as a fixed suffix, so only the number is typed; a unit
 // typed after it anyway is dropped.
 type Input struct {
 	// Value is the text without its unit, which typing changes in place.
-	Value       string
+	Value string
+	// Placeholder is the help shown in the text's place until there is any.
 	Placeholder string
 	Unit        string
-	// Accept, when set, checks the text on enter. Its error is shown under
-	// the text until the next key.
+	// Accept, when set, checks the text when the user enters or submits it.
+	// Its error is shown under the text until the next key.
 	Accept func(text string) error
 
 	text typedText
+	room int // the columns the text has, or 0 for as many as it takes
 }
 
 // start readies the input for a new showing.
@@ -93,9 +95,18 @@ func (in *Input) fit() {
 	if in.text.Value() == "" {
 		w = lipgloss.Width(in.Placeholder)
 	}
+	if in.room > 0 && max(w, lipgloss.Width(in.text.Value())) > in.room {
+		w = in.room
+	}
+	if w == in.text.Width() {
+		return
+	}
 	in.text.SetWidth(w)
-	// Recompute the visible span for the new width.
-	in.text.SetCursor(in.text.Position())
+	// Recompute the visible span for the new width, from the end, since
+	// textinput keeps a span that still holds the cursor.
+	at := in.text.Position()
+	in.text.CursorEnd()
+	in.text.SetCursor(at)
 }
 
 func (in *Input) check() bool { return in.text.check(in.Accept, in.Value) }
