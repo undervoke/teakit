@@ -58,7 +58,7 @@ To hide the shell's earlier text while the wizard runs, wrap the flow in `teakit
 
 Ctrl+C pressed between screens, while the flow works, cancels the flow's context with `teakit.ErrLeave` as its `context.Cause`, so that work should stop on it. The next screen then answers as if Ctrl+C was pressed on it: `ErrLeave` from `Step.Run` and `Wait`, `teakit.Interrupt` from `AskLeave`, and `teakit.DiffInterrupt` from `ReviewDiff`. A termination signal gives the same answers, with or without `AltScreen`.
 
-A full-screen model can move its cursor with `teakit.Move`, so its options wrap like a teakit select's.
+A full-screen model embeds a step as `teakit.NewStepModel(step)`: call `SetSize` with its box, pass every message to `Update` and run every command it returns, and draw `View`. Once it is `Done`, read `Result`. The model can move its own cursor with `teakit.Move`, so its options wrap like a teakit select's.
 
 ## Style text by its role
 

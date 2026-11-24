@@ -37,7 +37,7 @@ func TestScrolledScreenShowsCursor(t *testing.T) {
 	form.Fields[11].(*SelectField).Help = long
 	press := func(t *testing.T, s *Step, height int, key rune, cursor func() string, check func(view string)) {
 		s.Head = func(int) string { return "head" }
-		m := &stepModel{s: s}
+		m := &StepModel{s: s}
 		m.Update(tea.WindowSizeMsg{Width: 40, Height: height})
 		for range items {
 			m.Update(tea.KeyPressMsg{Code: key})

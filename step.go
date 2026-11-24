@@ -77,15 +77,7 @@ func (s *Step) choice() choice {
 // ErrBack when the user went back; and ErrLeave when they left the flow or
 // the program ended without an answer, as on a termination signal.
 func (s *Step) Run(ctx context.Context, opts ...tea.ProgramOption) error {
-	m := &stepModel{s: s}
-	if c := s.choice(); c != nil {
-		c.start()
-	} else if s.Form != nil {
-		s.Form.start()
-		s.Form.resize(screenWidth(0))
-	} else {
-		m.ask()
-	}
+	m := NewStepModel(s)
 	if err := show(ctx, m, opts); err != nil {
 		if interrupted(ctx) {
 			return ErrLeave
@@ -98,39 +90,76 @@ func (s *Step) Run(ctx context.Context, opts ...tea.ProgramOption) error {
 	return m.result
 }
 
-type stepModel struct {
+// StepModel is a Step to embed in a host's model. It never quits the program;
+// once it is Done, the owner reads Result and decides what follows. The host
+// passes it every message and runs the commands it returns.
+type StepModel struct {
 	s             *Step
 	quit          *LeaveModel // the leave question while it is up
 	width, height int
+	sized         bool // the host set the size
 	result        error
 	done          bool
 }
 
-func (m *stepModel) Init() tea.Cmd { return nil }
+// NewStepModel returns s for a new showing.
+func NewStepModel(s *Step) *StepModel {
+	m := &StepModel{s: s}
+	if c := s.choice(); c != nil {
+		c.start()
+	} else if s.Form != nil {
+		s.Form.start()
+		s.Form.resize(screenWidth(0))
+	} else {
+		m.ask()
+	}
+	return m
+}
 
-func (m *stepModel) Done() bool { return m.done }
+// SetSize sets the host's allotted box, taking precedence over subsequent
+// tea.WindowSizeMsg values. View is at most height rows.
+func (m *StepModel) SetSize(width, height int) {
+	m.sized = true
+	m.resize(width, height)
+}
+
+func (m *StepModel) resize(width, height int) {
+	m.width, m.height = width, height
+	if m.s.Form != nil {
+		m.s.Form.resize(screenWidth(width))
+	}
+}
+
+// Init performs no I/O.
+func (m *StepModel) Init() tea.Cmd { return nil }
+
+// Done reports that the user left the step.
+func (m *StepModel) Done() bool { return m.done }
+
+// Result returns what Run would, once the model is Done.
+func (m *StepModel) Result() error { return m.result }
 
 // ask puts up the leave question.
-func (m *stepModel) ask() {
+func (m *StepModel) ask() {
 	q := NewLeave(m.s.leave())
 	m.quit = &q
 }
 
-func (m *stepModel) end(result error) tea.Cmd {
+func (m *StepModel) end(result error) tea.Cmd {
 	m.result, m.done = result, true
 	return nil
 }
 
-func (m *stepModel) Update(msg tea.Msg) tea.Cmd {
+// Update handles a message.
+func (m *StepModel) Update(msg tea.Msg) tea.Cmd {
 	if m.done {
 		return nil
 	}
 	s := m.s
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width, m.height = msg.Width, msg.Height
-		if s.Form != nil {
-			s.Form.resize(screenWidth(m.width))
+		if !m.sized {
+			m.resize(msg.Width, msg.Height)
 		}
 		return nil
 	case tea.KeyPressMsg:
@@ -152,7 +181,7 @@ func (m *stepModel) Update(msg tea.Msg) tea.Cmd {
 	return nil
 }
 
-func (m *stepModel) press(msg tea.KeyPressMsg) tea.Cmd {
+func (m *StepModel) press(msg tea.KeyPressMsg) tea.Cmd {
 	s, c, key := m.s, m.s.choice(), msg.String()
 	typing := s.Select != nil && s.Select.typing()
 	switch {
@@ -202,7 +231,8 @@ func (m *stepModel) press(msg tea.KeyPressMsg) tea.Cmd {
 	return nil
 }
 
-func (m *stepModel) View() string {
+// View draws the step.
+func (m *StepModel) View() string {
 	width := screenWidth(m.width)
 	s := m.s
 	if m.quit != nil {
